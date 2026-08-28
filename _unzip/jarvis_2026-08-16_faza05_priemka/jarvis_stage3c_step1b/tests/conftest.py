@@ -66,8 +66,70 @@ def no_live_screen(monkeypatch):
 # в конце. Два правила: хук никогда не красит прогон, и частичный
 # прогон не затирает цифры полного.
 
+def _shout_if_packages_are_strangers():
+    """Сказать ВСЛУХ, если наши пакеты взялись не из этой папки.
+
+    ЗАЧЕМ ЭТО ЗДЕСЬ, А НЕ ТОЛЬКО В tests/test_packages_are_real.py.
+    28.08.2026 у владельца прогон оборвался на СБОРЕ: семь модулей не
+    импортировались, потому что `import agent` привёл в чужой проект в
+    Downloads. Тесты в такой ситуации не помогают — они сами не собрались.
+    Нужен голос ДО сбора, иначе владелец видит семь трасс и ни одного
+    объяснения, что произошло.
+
+    Второе, что тогда соврало: BUILD.txt записал 1623 теста вместо 1803,
+    потому что число берётся из `testscollected`, а собралось не всё.
+    Метка сборки выглядела правдоподобно и была неверна — это хуже, чем
+    её отсутствие. Здесь мы хотя бы называем причину.
+
+    Печатаем, а не падаем: сломать прогон из хука значило бы отобрать у
+    владельца возможность посмотреть остальное.
+
+    СПРАШИВАЕМ МЕХАНИЗМ ИМПОРТА, А НЕ sys.modules. Первая моя версия
+    смотрела в sys.modules — и МОЛЧАЛА на живой пробе с настоящей
+    подменой. Причина простая: этот хук работает ДО импорта тестовых
+    модулей, пакеты в sys.modules ещё не попали, и проверять было нечего.
+    Сторож существовал и не стерёг. Теперь спрашиваем find_spec: он
+    отвечает, откуда модуль ВОЗЬМЁТСЯ, и ничего не загружает — то есть не
+    портит прогон самим фактом проверки.
+    """
+    import importlib.util
+    from pathlib import Path
+    here = Path(__file__).resolve().parents[1]
+    bad = []
+    for name in ("agent", "core", "actions", "tools"):
+        try:
+            spec = importlib.util.find_spec(name)
+        except Exception as exc:              # noqa: BLE001
+            bad.append(f"{name} -> не удалось выяснить: {exc}")
+            continue
+        if spec is None:
+            bad.append(f"{name} -> не найден вовсе")
+            continue
+        places = [Path(p).resolve() for p in (spec.submodule_search_locations
+                                              or [])]
+        origin = spec.origin
+        if origin and origin not in ("namespace", "built-in", "frozen"):
+            places.append(Path(origin).resolve().parent)
+        ours = here / name
+        if not places:
+            bad.append(f"{name} -> место неизвестно (origin={origin})")
+        elif not any(p == ours for p in places):
+            bad.append(f"{name} -> {origin or places}")
+    if bad:
+        print("[ПРОГОН] ОСТАНОВИТЕСЬ: пакеты проекта взялись НЕ ОТСЮДА.")
+        for line in bad:
+            print("[ПРОГОН]   " + line)
+        print("[ПРОГОН] Рядом в пути поиска лежит файл с тем же именем "
+              "(чужой проект). Числу тестов и BUILD.txt после этого верить "
+              "нельзя.")
+
+
 def pytest_sessionstart(session):
     import time
+    try:
+        _shout_if_packages_are_strangers()
+    except Exception:                      # хук НИКОГДА не красит прогон
+        pass
     try:
         session.config._jv_started = time.time()
     except Exception:
