@@ -93,24 +93,75 @@ def main() -> int:
         print("\nСкажите: «Джарвис, какая погода в Москве?» и запустите снова.")
         return 1
 
-    print(f"\nвсего строк: {len(lines)}")
-    print("\nПОСЛЕДНИЕ 5 РЕШЕНИЙ:")
-    for line in lines[-5:]:
+    # РАЗДЕЛЕНИЕ СТРОК ПО ПИСАТЕЛЮ — ИСПРАВЛЕНИЕ МОЕЙ ОШИБКИ, 28.08.2026.
+    # Первая версия считала, что в gate-audit.jsonl пишет только дверь. Прогон
+    # владельца это опроверг на 78 строках настоящего журнала: пришло
+    #     [СБОЙ] лишние поля: event, tool_ver, to, pre_rollback, restored,
+    #            side_removed, fts, state, refused
+    # Это НЕ утечка и НЕ поломка. Это `tools/rollback_state.py:276` — откат
+    # состояния пишет в тот же журнал свою строку с `event="state_rollback"`,
+    # и правильно делает: журнал один, свидетельства о состоянии тоже.
+    # У строк двери поля `event` нет вовсе — по нему и различаем.
+    doors = [x for x in lines if "event" not in x]
+    others = [x for x in lines if "event" in x]
+
+    print(f"\nвсего строк: {len(lines)}"
+          + (f"   (решений двери {len(doors)}, прочих событий {len(others)})"
+             if others else ""))
+    print("\nПОСЛЕДНИЕ 5 РЕШЕНИЙ ДВЕРИ:")
+    for line in (doors[-5:] or lines[-5:]):
         print(human(line))
 
     problems = []
 
-    # 1. Цепочка обязана быть в КАЖДОЙ строке — это ворота фазы 1б-1.
+    # 1. Цепочка обязана быть в каждой строке двери — но ТОЛЬКО В НОВЫХ.
+    #
+    # ВТОРАЯ МОЯ ОШИБКА, найденная тем же прогоном: пришло
+    #     [СБОЙ] строк без origin_chain: 75 из 78
+    # и это было ЛОЖНОЕ ОБВИНЕНИЕ. Журнал владельца живёт с 23 августа, а
+    # подпись «кто просил» появилась 28-го, в фазе 1б-1. Семьдесят пять старых
+    # строк цепочки не имеют просто потому, что тогда её не существовало.
+    #
+    # Требовать её от них — значит требовать, чтобы прошлое переписалось. Хуже:
+    # такой скрипт кричит «СБОЙ» вечно, и владелец перестаёт ему верить —
+    # ровно то, чем красный сторож опаснее отсутствующего.
+    #
+    # Правило 5 `core/audit_log.py` прямо это предусматривает: «формат только
+    # дополняется, никогда не переписывается», и читатель обязан пропускать
+    # незнакомое, а не падать. Поэтому граница — ПЕРВАЯ строка с цепочкой:
+    # всё после неё обязано её иметь, всё до неё — история.
     print("\n" + "-" * 70)
-    no_chain = [x for x in lines if not x.get("origin_chain")]
-    if no_chain:
-        print(f"[СБОЙ] строк без origin_chain: {len(no_chain)} из {len(lines)}")
-        problems.append("есть строки без цепочки «кто просил»")
+    first_new = next((i for i, x in enumerate(doors) if x.get("origin_chain")),
+                     None)
+    if not doors:
+        # Отдельная ветка, иначе печаталось «ни в одной из 0 строк» — фраза,
+        # которая выглядит как обвинение, а на деле означает «нечего смотреть».
+        print("[--  ] решений двери в журнале пока нет — есть только служебные"
+              " события")
+        print("       Скажите «Джарвис, какая погода в Москве?» и запустите"
+              " снова.")
+        problems.append("дверь ещё не принимала решений — проверять нечего")
+    elif first_new is None:
+        print(f"[СБОЙ] ни в одной из {len(doors)} строк двери нет origin_chain")
+        print("       Похоже, запущена версия ДО фазы 1б-1.")
+        problems.append("подписи «кто просил» нет ни в одной строке")
     else:
-        print(f"[OK  ] цепочка «кто просил» есть во ВСЕХ {len(lines)} строках")
+        old, new = doors[:first_new], doors[first_new:]
+        holes = [x for x in new if not x.get("origin_chain")]
+        if holes:
+            print(f"[СБОЙ] среди новых строк {len(holes)} без origin_chain")
+            problems.append("новые строки двери без цепочки «кто просил»")
+        else:
+            print(f"[OK  ] цепочка есть во ВСЕХ {len(new)} строках двери,"
+                  " записанных после установки фазы 1б")
+        if old:
+            print(f"[--  ] {len(old)} строк старше фазы 1б подписи не имеют —"
+                  " так и должно быть")
+            print("       журнал только дополняется, прошлое не переписывается"
+                  "  (правило 5 core/audit_log.py)")
 
     # 2. Ваши собственные просьбы должны выглядеть как owner -> main.
-    mine = [x for x in lines if (x.get("origin_chain") or []) == ["owner", "main"]]
+    mine = [x for x in doors if (x.get("origin_chain") or []) == ["owner", "main"]]
     if mine:
         print(f"[OK  ] ваших личных просьб в журнале: {len(mine)}"
               "   (цепочка owner -> main)")
@@ -120,7 +171,7 @@ def main() -> int:
               " голосом, например про погоду")
 
     # 3. Работа под-агентов: цепочка длиннее двух звеньев.
-    agents = [x for x in lines if len(x.get("origin_chain") or []) > 2]
+    agents = [x for x in doors if len(x.get("origin_chain") or []) > 2]
     if agents:
         print(f"[OK  ] работы под-агентов в журнале: {len(agents)}")
         roles = sorted({x.get("agent_role") for x in agents if x.get("agent_role")})
@@ -130,7 +181,7 @@ def main() -> int:
               " давали фоновых задач")
 
     # 4. След забора в журнале — если под-агенты вообще пытались.
-    fenced = [x for x in lines
+    fenced = [x for x in doors
               if x.get("verdict") == "blocked" and "I12" in (x.get("reason") or "")]
     if fenced:
         print(f"[OK  ] забор фазы 1б-2 срабатывал: {len(fenced)} раз")
@@ -181,19 +232,47 @@ def main() -> int:
             if not good:
                 problems.append(text)
 
-    # 5. Значения параметров не имеют права лежать в журнале.
+    # 5. ЗНАЧЕНИЯ параметров не имеют права лежать в журнале (правило 6).
+    #
+    # ЭТА ПРОВЕРКА БЫЛА НАПИСАНА НЕВЕРНО, и прогон владельца это показал.
+    # Я перечислял РАЗРЕШЁННЫЕ поля и звал «СБОЙ» на всё остальное. На живом
+    # журнале это обвинило `tools/rollback_state.py` — законного второго
+    # писателя — и напечатало «лишние поля: event, tool_ver, to, restored...».
+    #
+    # Ошибка не в списке, а в самой мысли. Правило 6 запрещает не «новые
+    # поля», а ЗНАЧЕНИЯ ПАРАМЕТРОВ пользователя. Белый список полей ломается
+    # при каждом честном расширении формата — а правило 5 расширения прямо
+    # разрешает. То есть мой сторож запрещал то, что документация позволяет,
+    # и при этом НЕ ЛОВИЛ то, что она запрещает: строка с `params` прошла бы,
+    # если бы я забыл вписать её в чёрный список.
+    #
+    # Теперь проверяется ровно запрет: у решений двери значений нет, есть
+    # только `param_keys` — список ИМЁН. Ищем поле, где под ключом лежит не
+    # список имён, а словарь со значениями.
     print("\n" + "-" * 70)
-    leak = [x for x in lines if any(
-        k not in ("schema_ver", "ts", "ts_utc", "tool", "action", "mode",
-                  "verdict", "risk", "policy", "reason", "param_keys",
-                  "task_id", "agent_role", "origin_chain", "depth")
-        for k in x)]
-    if leak:
-        print(f"[СБОЙ] в журнале есть лишние поля — проверьте: {list(leak[0])}")
-        problems.append("в строке журнала появились незапланированные поля")
+    VALUE_FIELDS = ("params", "parameters", "args", "arguments", "kwargs",
+                    "param_values", "value", "values", "payload")
+    leak = [x for x in doors if any(k in x for k in VALUE_FIELDS)]
+    # `param_keys` обязан быть списком строк-имён, а не словарём.
+    bad_keys = [x for x in doors
+                if x.get("param_keys") is not None
+                and not isinstance(x.get("param_keys"), list)]
+    if leak or bad_keys:
+        who = (leak or bad_keys)[0]
+        print("[СБОЙ] в строке двери лежат ЗНАЧЕНИЯ параметров, а не только"
+              f" имена: {sorted(set(who) & set(VALUE_FIELDS)) or 'param_keys'}")
+        problems.append("в журнал попали значения параметров (правило 6)")
     else:
-        print("[OK  ] в строках только имена параметров, значений нет"
-              "   (правило 6 core/audit_log.py)")
+        print(f"[OK  ] в {len(doors)} строках двери только ИМЕНА параметров,"
+              " значений нет   (правило 6 core/audit_log.py)")
+
+    if others:
+        # Не «лишние поля», а другой писатель. Журнал один нарочно.
+        events = sorted({x.get("event") for x in others if x.get("event")})
+        print(f"[--  ] в журнале есть {len(others)} строк не от двери:"
+              f" {', '.join(events)}")
+        print("       это tools/rollback_state.py — откат состояния пишет"
+              " сюда же, и правильно")
 
     print("\n" + "=" * 70)
     if problems:
