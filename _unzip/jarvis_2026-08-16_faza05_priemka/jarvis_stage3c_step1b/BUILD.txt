@@ -3,8 +3,8 @@ Jarvis Mark XXXVI. Метка сборки. Этот файл пишет код,
 Строки вида ключ = значение читает код. Руками их менять бессмысленно.
 
 stamp_ver = 1
-written_at = 2026-08-28T23:25:36
-written_at_utc = 2026-08-28T23:25:36Z
+written_at = 2026-08-28T23:48:43
+written_at_utc = 2026-08-28T23:48:43Z
 written_by = tests
 code_ver = 1.21
 phase = 1
@@ -27,7 +27,7 @@ settings_ver = нет файла
 memory_ver = 1
 personality_ver = нет файла
 gate_audit_ver = 1
-partial_at = 2026-08-28T23:55:00
+partial_at = 2026-08-28T23:48:43
 partial_failed = 0
-partial_total = 35
+partial_total = 45
 Строки вида ключ = значение читает код. Руками их менять бессмысленно.
