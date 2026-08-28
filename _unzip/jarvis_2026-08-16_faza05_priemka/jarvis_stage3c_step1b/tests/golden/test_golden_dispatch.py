@@ -212,8 +212,33 @@ def test_golden_screen_on_allows_interactive(jarvis):
     assert handler_called(calls, "computer_control"), result
 
 
-def test_golden_save_memory_pregate(jarvis, monkeypatch):
-    """save_memory намеренно идёт ДО security-гейта (silent-путь)."""
+def test_golden_save_memory_now_asks_the_door(jarvis, monkeypatch):
+    """save_memory СПРАШИВАЕТ у двери — и всё равно пишет молча (фаза 1в).
+
+    РЕШЕНИЕ ИЗМЕНЕНО ОСОЗНАННО, 28.08.2026, с согласия владельца.
+
+    Этот тест раньше назывался `test_golden_save_memory_pregate` и утверждал
+    ОБРАТНОЕ: «save_memory намеренно идёт ДО гейта», с проверкой
+    `assert not gate_hits`. Так было записано в STAGE0-PLAN.md:137, и это
+    было честной фиксацией фактического поведения этапа 0.
+
+    ПОЧЕМУ ПЕРЕПИСАН, А НЕ «ПОДКРУЧЕН». Измерение на живой машине владельца
+    показало цену того решения: голосовое «запомни, что я не пью кофе после
+    шести» память записало, а в журнале двери не появилось НИ ОДНОЙ строки.
+    Память оказалась единственным местом в доме, куда можно положить факт, не
+    оставив следа. Для фазы 2 (под-агенты работают без владельца) это
+    неприемлемо: забор I12/Г-3 живёт ВНУТРИ двери, и пока дверь недостижима,
+    забор для этого пути не работает.
+
+    Переименование намеренное: старое имя врало бы о том, что тест проверяет.
+    Молча заменить `assert not gate_hits` на обратное — это грабли «починил
+    молча»; правка обязана быть видна в истории.
+
+    ЧТО ЗАКРЕПЛЯЕТСЯ ЗДЕСЬ (три вещи, и все три важны):
+      1. дверь СПРОШЕНА — иначе забор под-агента для этого пути мёртв;
+      2. владельцу по-прежнему РАЗРЕШЕНО — риск не поднимали, вопросов нет;
+      3. ответ по-прежнему `silent` — Джарвис не отчитывается вслух.
+    """
     jl, calls = jarvis
     gate_hits = []
     import core.security as sec
@@ -223,9 +248,12 @@ def test_golden_save_memory_pregate(jarvis, monkeypatch):
     fc = SimpleNamespace(name="save_memory",
                          args={"category": "notes", "key": "k", "value": "v"}, id="g")
     resp = asyncio.run(jl._execute_tool(fc))
-    assert resp.response.get("silent") is True
-    assert handler_called(calls, "update_memory")
-    assert not gate_hits, "save_memory неожиданно попал под гейт (изменение поведения)"
+    assert gate_hits, "save_memory обошёл дверь — фаза 1в откатилась"
+    assert handler_called(calls, "update_memory"), (
+        "дверь спрошена, но запись не состоялась — владельцу отказали, "
+        "хотя риск не меняли")
+    assert resp.response.get("silent") is True, (
+        "потерян silent — Джарвис начнёт вслух отчитываться о каждой записи")
 
 
 def test_golden_gate_is_actually_called(jarvis, monkeypatch):
