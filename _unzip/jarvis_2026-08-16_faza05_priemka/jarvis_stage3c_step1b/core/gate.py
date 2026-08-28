@@ -94,11 +94,69 @@ class GateResult:
 _VERDICT_ICON = {"run": "✅", "blocked": "🛡", "screen_off": "🛡", "confirm": "⚠️"}
 
 
-def _audit(result: GateResult, param_keys) -> None:
+def _origin(ctx=None) -> dict:
+    """Четыре поля «кто просил» для строки журнала (фаза 1б, I11).
+
+    ПОЧЕМУ ОТКАТ НА КОНТЕКСТ ОБЯЗАТЕЛЕН, А НЕ «ПРИЯТНОЕ ДОПОЛНЕНИЕ»
+    Живых вызовов двери четыре (main.py, agent/executor.py,
+    core/offline_core.py, check_lang.py) и НИ ОДИН из них пропуск не
+    передаёт. Если полагаться только на параметр, поля были бы пусты
+    ВСЕГДА, а тест «передал ctx — цепочка на месте» при этом зелёный.
+
+    Это не гипотеза, а грабли №4 проекта, уже случившиеся в учёте
+    (core/metering.py:199): «проверял пропуск в КОНТЕКСТЕ, а не то, что
+    доехало до базы. Проверять надо результат, а не полпути.» Здесь та же
+    мина, и защита от неё — сторож, читающий СТРОКУ ЖУРНАЛА после вызова
+    без явного ctx.
+
+    Замер 28.08.2026, чем этот откат живёт:
+        main.py       — дверь на строке 1334, run_in_executor на 1364,
+                        то есть дверь ДО прыжка в поток: контекст виден;
+        _call_tool    — вложенный вызов внутри `with bind(ctx)` из
+                        agent/task_queue.py:325, тот же поток: виден.
+    Поэтому правок в замороженном main.py фаза не требует вовсе.
+
+    Порядок старшинства взят из шапки core/task_context дословно: явный
+    пропуск сильнее контекста. Два источника правды разошлись бы молча.
+
+    Цена: ПЕРЕМЕРЕНА 28.08.2026 на живой двери, и первая цифра здесь была
+    неверной. Сначала стояло «1,3 мкс» — это замер отдельно взятых
+    `current()` + четырёх полей, в вакууме. На настоящей двери он не
+    воспроизводится:
+        1500 решений x 5 повторов, порядок чередуется, медиана
+        с цепочкой : 89,1 мкс  (разброс 84,2..106,3)
+        без неё    : 94,1 мкс  (разброс 85,3..129,9)
+    Разбросы ПЕРЕСЕКАЮТСЯ, а медиана «с цепочкой» вышла даже меньше —
+    значит подписи в этом шуме не видно вовсе. Честный вывод не «подпись
+    стоит 1,3 мкс», а «на фоне самой двери (~90 мкс на решение, из них
+    основное — запись строки на диск) цену подписи измерить нельзя».
+    Оставлять красивую точную цифру, которая не проверяется, — это ровно
+    тот сорт лжи, который потом принимают за замер.
+    """
+    try:
+        from core import task_context
+        got = task_context.current(ctx)
+        return {
+            "task_id": got.task_id,
+            "agent_role": got.agent_role,
+            # Список, а не кортеж: JSON кортежей не знает, а поле обязано
+            # читаться теми же глазами, что писали.
+            "origin_chain": list(got.origin_chain),
+            "depth": got.depth,
+        }
+    except Exception:
+        # Правило кассы сильнее полноты записи: решение двери важнее подписи
+        # под ним. None здесь — честное «не знаем», и оно отличимо от
+        # отсутствия поля.
+        return {"task_id": None, "agent_role": None,
+                "origin_chain": None, "depth": None}
+
+
+def _audit(result: GateResult, param_keys, ctx=None) -> None:
     """Append exactly one JSON line per decision. MUST never raise."""
     try:
         from core import audit_log  # lazy import: startup stays thin
-        audit_log.append({
+        line = {
             "tool": result.tool,
             "action": result.action,
             "mode": result.mode,
@@ -108,7 +166,14 @@ def _audit(result: GateResult, param_keys) -> None:
             "reason": (result.reason or "")[:200],
             # KEYS only — never values (avoid logging file contents / PII).
             "param_keys": sorted(str(k) for k in (param_keys or [])),
-        })
+        }
+        # Формат ТОЛЬКО дополняется (audit_log.py, правило 5): старые поля
+        # остались на местах, SCHEMA_VER не двигается. Поднять версию было бы
+        # заманчиво «на всякий случай», но это сломало бы читателей, которые
+        # сверяют её на равенство (core/state_version.py:210), — а ломать
+        # нечего: добавление поля никого из них не задевает.
+        line.update(_origin(ctx))
+        audit_log.append(line)
     except Exception:
         pass  # auditing must never break execution
     # Small console breadcrumb (golden tests do not assert on stdout).
@@ -253,6 +318,7 @@ def dispatch(
     *,
     mode: Mode = "interactive",
     screen_control: bool = False,
+    ctx=None,
 ) -> GateResult:
     """
     The single security gate. Returns a GateResult; the caller executes the tool
@@ -261,6 +327,17 @@ def dispatch(
     This function does not raise for policy reasons — it encodes them as verdicts.
     It may raise only on a genuine internal error, which the caller must treat as
     fail-closed (do not run the tool).
+
+    Про `ctx` (фаза 1б, I11). Пропуск `TaskCtx` из core/task_context: кто
+    просил действие, для какого дела и через какую цепочку роль. Значение по
+    умолчанию `None` — ключевое решение фазы: ни один из 1790 существующих
+    сторожей и ни один из четырёх живых вызовов не ломается, а откат фазы
+    равен «перестать передавать параметр».
+
+    На решение двери пропуск НЕ влияет и влиять не должен: он подписывает
+    строку журнала, а не меняет вердикт. Как только он начнёт менять решение,
+    у политики появится второй хозяин, и разобрать «почему отказал» станет
+    негде. Решения принимает core/security.py, и только он.
     """
     params = dict(params or {})
     # Autonomous path can never self-approve a confirm-gated action.
@@ -276,7 +353,7 @@ def dispatch(
             "blocked", tool, action, decision.risk, decision.policy, mode,
             message=_sec.format_security_block(decision), reason=decision.reason,
         )
-        _audit(r, params.keys())
+        _audit(r, params.keys(), ctx)
         return r
 
     # 2) Screen-gated interactive action (click / type / focus_window ...).
@@ -291,14 +368,14 @@ def dispatch(
                 ),
                 reason="screen action in autonomous task",
             )
-            _audit(r, params.keys())
+            _audit(r, params.keys(), ctx)
             return r
         if not screen_control:
             r = GateResult(
                 "screen_off", tool, action, decision.risk, decision.policy, mode,
                 message=SCREEN_OFF_MSG, reason="SCREEN toggle OFF",
             )
-            _audit(r, params.keys())
+            _audit(r, params.keys(), ctx)
             return r
 
     # 3a) Stage 3A: durable consent. When the flag is ON this REPLACES the
@@ -307,7 +384,7 @@ def dispatch(
     if mode == "interactive" and _consent_enabled():
         cr = _consent_verdict(tool, action, params, decision, mode)
         if cr is not None:
-            _audit(cr, params.keys())
+            _audit(cr, params.keys(), ctx)
             return cr
 
     # 3) Confirm-policy (high/critical risk, not yet confirmed).
@@ -323,16 +400,16 @@ def dispatch(
                 ),
                 reason="confirm required (autonomous → deny)",
             )
-            _audit(r, params.keys())
+            _audit(r, params.keys(), ctx)
             return r
         r = GateResult(
             "confirm", tool, action, decision.risk, decision.policy, mode,
             message=_sec.format_confirmation_request(tool, reason), reason=reason,
         )
-        _audit(r, params.keys())
+        _audit(r, params.keys(), ctx)
         return r
 
     # 4) Cleared to run.
     r = GateResult("run", tool, action, decision.risk, decision.policy, mode)
-    _audit(r, params.keys())
+    _audit(r, params.keys(), ctx)
     return r
