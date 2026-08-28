@@ -347,6 +347,36 @@ def dispatch(
     decision = _sec.check_tool_call(tool, params)
     action = decision.action
 
+    # 0) Заборы (фаза 1б-2, I12 / Г-3). СТОИТ ПЕРВЫМ, и это важно: чего
+    # под-агент не делает никогда, то незачем сверять с риском, экраном и
+    # подтверждениями. Раньше проверки — меньше шансов, что новая ветка
+    # решений однажды проскочит мимо забора.
+    #
+    # Сломавшийся забор — ОТКАЗ, а не «поехали дальше». Так требует правило
+    # fail-closed этого файла: неизвестно, кто просит запись в память —
+    # значит не пишем. Именно поэтому здесь нет `except: pass`, хотя в
+    # `_audit` он есть: журнал не имеет права мешать делу, а забор — имеет,
+    # он для этого и существует.
+    try:
+        from core import fences
+        fence = fences.check(tool, params, ctx=ctx)
+    except Exception as fence_err:
+        r = GateResult(
+            "blocked", tool, action, decision.risk, decision.policy, mode,
+            message=("SECURITY: fence check failed, action not run "
+                     f"({tool})."),
+            reason=f"fence error (fail-closed): {fence_err}",
+        )
+        _audit(r, params.keys(), ctx)
+        return r
+    if fence.blocked:
+        r = GateResult(
+            "blocked", tool, action, decision.risk, decision.policy, mode,
+            message=fence.message, reason=fence.reason,
+        )
+        _audit(r, params.keys(), ctx)
+        return r
+
     # 1) Hard block (unknown tool, blocked tool, blocked action).
     if not decision.allowed:
         r = GateResult(
