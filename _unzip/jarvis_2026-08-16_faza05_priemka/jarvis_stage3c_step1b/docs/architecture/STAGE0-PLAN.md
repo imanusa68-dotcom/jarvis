@@ -1,0 +1,240 @@
+# Этап 0 миграции MARK XXXV → MARK XXXVI: план внедрения
+
+> **СТАТУС (2026-07-19): ВЫПОЛНЕН**, тег `v0-stage0-done`, 8 коммитов (0.1–0.6).
+> Итог: git-репозиторий с чистой историей; uv.lock (Python ~=3.12, +send2trash/
+> python-docx/openpyxl/google-generativeai/pyyaml, которых не было в requirements);
+> удалено ~4k строк мёртвого кода; 39 golden-сценариев (192 теста зелёные);
+> config/loader.py + secrets.json/settings.json (legacy-fallback до 2026-08-02);
+> config/registry.yaml — 6 ролей, ноль хардкодов моделей. Оба grep-гейта чисты.
+> **Осталось на пользователе:** (1) ротация ключа Gemini (жил в plaintext);
+> (2) ручной смоук живой голосовой сессии; (3) объявлен фичефриз прототипа.
+> KNOWN-HOLE/KNOWN-BAD зафиксированы в tests/golden/ — контракт этапа 1.
+
+> Результат разведки кодовой базы 2026-07-19 (6 параллельных обследований: конфиг/ключи,
+> модели/SDK, мёртвый код, тесты/зависимости, диспетчеризация, окружение/трекер).
+> Все факты проверены по коду с точностью до строки. Дополняет
+> `ARCHITECTURE-RESEARCH-2026-07.md` §7 (строка плана «Этап 0»).
+
+## 0. Резюме: что этап 0 делает и чего НЕ делает
+
+**Делает:** git-страховка + uv.lock (воспроизводимость), удаление мёртвых ~30% actions/,
+golden-сценарии как merge-гейт, единый config + вынос живого ключа, registry.yaml ролей
+моделей. **Поведение системы не меняется** — только рефакторинг доступа к конфигу и
+удаление недостижимого кода.
+
+**НЕ делает (защита от scope creep — это следующие этапы):**
+- НЕ закрывает дыру agent/executor мимо гейта (этап 1 — dispatch());
+- НЕ закрывает обход allowlist через `command` в cmd_control (этап 1);
+- НЕ мигрирует старый SDK google.generativeai → google.genai (этап 5);
+- НЕ выносит TOOL_DECLARATIONS в манифесты (этап 8) — программное добавление
+  `confirmed` (main.py:780-789) остаётся как есть;
+- НЕ чинит barge-in, потерю текста при неписабельной сессии, fail-open гейта.
+
+## 1. Критические факты, меняющие порядок работ
+
+1. **Проект — НЕ git-репозиторий.** При этом `.gitignore` в корне — чужой шаблон
+   v0/Next.js: он НЕ игнорирует ни `config/api_keys.json` (живой ключ Gemini, одно поле
+   `gemini_api_key`), ни `__pycache__/`. `git init && git add .` в текущем виде — ключ
+   навсегда в истории.
+2. **Зелёная база тестов (153/153) держится на глобальных пакетах:** `send2trash`
+   (жёсткий импорт file_controller.py:8 → без него падают 7 из 14 тест-файлов) и
+   `google-generativeai` (весь agent/) отсутствуют в requirements.txt; pytest нигде
+   не объявлен. Наивный `uv sync` даст красную базу.
+3. **Окружение нестабильно:** в `__pycache__` байткод от Python 3.12 И 3.13; venv
+   отсутствует; py-launcher в bash недоступен. Пин `requires-python ~=3.12` обязателен.
+4. **api_keys.json — одновременно секрет и mutable-конфиг:** screen_processor пишет
+   туда `camera_index` в рантайме; time_utils читает `timezone`. Просто удалить файл
+   нельзя. Вдобавок `ui.py:1174-1180` при прохождении setup-экрана **деструктивно
+   перезаписывает** файл одним ключом (стирает camera_index/timezone).
+5. **memory/config_manager.py — готовый прототип единого config-API с нулём импортов**
+   (мёртвый). Реанимировать, а не писать с нуля; не удалить случайно при чистке.
+6. **Разделение моделей местами намеренное** (квотная изоляция: screen_live_session.py:235
+   «сознательно НЕ flash-lite»; отдельный live-пул screen view). registry.yaml фиксирует
+   РОЛИ (~7), а не дедуплицирует ID (5 уникальных, ~36 вхождений).
+7. **Тесты не пострадают от чистки:** из 24 модулей actions/ тесты импортируют только
+   file_controller и open_path; grep имён мёртвых модулей по tests/ — пусто. Вынос ключа
+   тесты тоже не заметят (grep api_key по tests/ — пусто).
+8. **agent/, main.py и 22 модуля actions/ не имеют ни одного теста** — golden-сценарии
+   этапа 0 будут единственной сеткой для этапов 1–4.
+
+## 2. Порядок шагов (каждый шаг = коммит(ы) + зелёные 153 теста)
+
+### Шаг 0.1 — git-страховка (ДО любых правок кода)
+
+1. Переписать `.gitignore` (заменить v0-шаблон): `config/api_keys.json`, `__pycache__/`,
+   `*.pyc`, `.pytest_cache/`, `.venv/`, `.claude/settings.local.json`,
+   `memory/long_term.json`, `memory/api_usage.json`, `memory/reminders.json`,
+   артефакты-песочницы Джарвиса: `JV/`, `documents/`, `information/`, `Мои сочинения`,
+   `desktop/NewFolder`.
+2. Удалить одноразовые артефакты корня (JV/, documents/, information/, «Мои сочинения»,
+   desktop/NewFolder, __pycache__ обоих питонов) — пути ОСТАВИТЬ в ignore: Jarvis
+   пересоздаст их при golden-прогонах.
+3. `git init` → `git status --ignored` → глазами убедиться, что api_keys.json в ignored
+   → первый коммит → контроль: `git log -p -- config/` и `git grep gemini_api_key` не
+   показывают значения ключа.
+4. **Ротация ключа** (рекомендуется): ключ жил в plaintext в дереве, читался ~20 модулями.
+   Перевыпустить в AI Studio, старый отозвать. Обязательна перед любой публикацией репо.
+
+### Шаг 0.2 — uv: воспроизводимое окружение
+
+1. `pyproject.toml` с нуля (setup.py — 11-строчный pip-скрипт, не packaging):
+   зависимости из requirements.txt **плюс `send2trash` и `google-generativeai`**
+   (старый SDK жив до этапа 5); `requires-python = "~=3.12"`;
+   `[dependency-groups] dev = ["pytest~=8.3"]`;
+   `[tool.pytest.ini_options]`: `pythonpath = ["."]` (иначе `uv run pytest` не найдёт
+   core/*), `addopts = "-p no:capture"` (закрепить устное знание о pyreadline — нигде
+   в репо не зафиксировано).
+2. `uv venv` (3.12) → `uv sync` → `uv lock` → **прогнать полный pytest: эталон 153 passed**
+   → коммит pyproject.toml + uv.lock.
+3. Задокументировать пост-шаг `playwright install chromium` (uv его не сделает) и команду
+   запуска тестов в README.
+
+### Шаг 0.3 — мёртвый код (по таблице ссылок из разведки; коммит на подшаг)
+
+Порядок от безопасного к сложному; после каждого подшага — тесты + запуск ассистента.
+
+1. **searxng_search.py** — удалить файл целиком. Синхронных правок нет (проверено: ни
+   одного импорта). Заодно исчезает сиротский конфиг-ключ `searxng_url`.
+2. **4 полные заглушки** (send_message, computer_settings, dev_agent, flight_finder) —
+   удалить файлы + синхронно: main.py (import :22,25,27,35; декларации :343,411,530,609;
+   elif :1103,:1124,:1140,:1172), agent/executor.py (:135,:144,:160,:178),
+   agent/planner.py (секции PLANNER_PROMPT :132,:150,:172,:184 + пример send_message
+   :239-241), core/response_composer.py (:63-68, :152-153), core/prompts/01_tools.txt
+   (:34,:53,:93,:95,:106), core/prompt.txt (:20-21).
+   **Blocked-записи в SECURITY_POLICY (security.py:409-428) ОСТАВИТЬ** — defense-in-depth
+   и якорь для тестов stage1/stage2 (они продолжат проходить).
+   **flight_finder policy security.py:169-174 — перевести allowed → blocked** (сейчас
+   ложь: allowed при функции-заглушке).
+3. **Частично-мёртвые ветки**: youtube_video (вырезать :113-186, :218-310, :379-453,
+   _ACTION_MAP :511-512, импорты cv2/numpy/pyautogui :9-11 — нужны только мёртвым
+   веткам), desktop (exec-механизм :56-150 — недостижим, wallpaper/organize/clean,
+   импорт pyautogui :16), code_helper (всё кроме explain-пути), game_updater
+   (install/update/schedule-код, __main__ :785-788, leftover `shutdown`
+   security.py:323-324). Синхронно: тексты действий в декларациях main.py, списки в
+   PLANNER_PROMPT (:161-167), 01_tools.txt.
+   **cv2 остаётся** (screen_processor живой), pyautogui остаётся (computer_control,
+   open_app), numpy остаётся — из зависимостей ничего не удалять.
+4. Предварительно: `schtasks /query` — проверить, что game_updater `--scheduled` не
+   прописан во внешнем Task Scheduler.
+
+Оценка удаления: ~3.2–3.5k строк из ~4.5k мёртвых в 9 файлах.
+
+### Шаг 0.4 — golden-сценарии (после чистки, ДО config-рефакторинга)
+
+Config-рефакторинг (0.5–0.6) — самая рискованная часть этапа (18 точек чтения); сетка
+должна существовать до него. ScriptedModel/LLMProvider ещё нет (этап 5) — потому
+golden этапа 0 = **интеграционные тесты `main._execute_tool` с фейковой сессией/моками
+на границе SDK**, ассерты — решения гейта и вызванные хендлеры, не текст модели.
+
+Состав (20–30, материал из разведки диспетчеризации):
+- по одному на каждый живой allowed-тул main-пути (web_search, weather, reminder,
+  open_app, file_controller list/read, system_context, resolve_reference, open_path…);
+- confirm-кейсы: file_controller write/move/rename (+ ассерт «без confirmed →
+  CONFIRMATION_REQUIRED, с confirmed=true → исполнение»);
+- blocked-кейсы: file_controller delete, cmd_control с danger-словами (param-aware
+  промоушен security.py:753-758), unknown tool → forbid;
+- SCREEN-тоггл: computer_control интерактив при OFF (блок) и ON (auto);
+- save_memory — фиксация «идёт ДО гейта» (намеренное поведение);
+- **парные сценарии дыры**: «запиши в файл» напрямую (confirm) vs тот же запрос через
+  agent_task (исполняется без confirm) — фиксируем расхождение как KNOWN-HOLE, чтобы
+  этап 1 его закрыл осознанно, а не «починил молча»;
+- текстовое перебивание во время речи (голосовой barge-in невозможен — полудуплекс
+  main.py:1373-1380; interruption-кейсы только текстом);
+- fail-open гейта: тест «check_tool_call реально вызывается» (иначе рефакторинг config,
+  сломавший импорт security, молча отключит гейт — main.py:1074-1077);
+- known-bad фиксации: open_search_source → «Unknown tool» (отсутствует в
+  SECURITY_POLICY вопреки ARCHITECTURE.md:81); потеря текста при неписабельной сессии.
+
+Каждый сценарий — файл в `tests/golden/`, прогон в общем pytest. Критерий шага:
+golden зелёные и включены в команду смоука.
+
+### Шаг 0.5 — единый config + вынос ключа
+
+1. Реанимировать `memory/config_manager.py` → новый модуль `config/loader.py`
+   (или `core/config.py`): секреты отдельно от настроек; API вида `get_api_key()`,
+   `get_setting(name)`, `set_setting(name, value)`; read-merge-write; атомарная запись
+   (temp + os.replace); явная `ConfigError` вместо сырых FileNotFoundError/KeyError;
+   сохранить PyInstaller-ветку `getattr(sys, "frozen", False)` из _get_base_dir.
+2. Ключ — в `config/secrets.json` (в ignore) или через keyring/DPAPI (решение §5.8
+   итогового документа — DPAPI/keyring; допустимо файлом на этапе 0, keyring — фоллоу-ап);
+   несекретные настройки (timezone, camera_index) — `config/settings.json` (в репо
+   допустим шаблон). Старый api_keys.json поддержать как fallback на переходные 2 недели
+   (правило «старый путь УДАЛЁН» — календарный лимит).
+3. Заменить все 18 точек чтения: 14 копий `_get_api_key` + инлайн computer_control:356
+   (заодно убрать чтение без encoding) + google_search_api._load_config +
+   time_utils + ui.py (проверка существования → `is_configured()`).
+   Для старого SDK ключ по-прежнему уходит в `genai.configure(...)` — меняется только
+   ИСТОЧНИК ключа, не SDK (миграция SDK — этап 5).
+4. **Починить деструктивную перезапись ui.py:1174-1180** (read-merge-write через новый API).
+5. Не менять тексты ответов тулов: record_action (main.py:1286-1297) определяет успех
+   эвристикой по префиксу строки — смена текстов сломает журнал и follow-up-резолв.
+
+### Шаг 0.6 — registry.yaml (роли → модели)
+
+Файл `config/registry.yaml`, ~7 ролей, зеркалящих ТЕКУЩЕЕ состояние (не менять модели):
+
+| Роль | Сейчас | Точки замены |
+|---|---|---|
+| live_voice | models/gemini-2.5-flash-native-audio-preview-12-2025 | main.py:65 (+ дубль screen_processor.py:43) |
+| live_screen | models/gemini-3.1-flash-live-preview | screen_live_session.py:48 + дубль screen_live_runtime.py:76 |
+| aux_light | gemini-2.5-flash-lite | aux_model.py:24 default + planner:303, error_handler:98, executor:66, web_search ×3, deep_research:54, screen_share_manager:572 … |
+| aux_heavy | gemini-2.5-flash | planner:392 (replan), executor:84, code_helper:31 … |
+| vision_ui | gemini-2.5-flash | computer_control:360, code_helper:490 |
+| fix_legacy | gemini-2.0-flash | error_handler:157, screen_live_session:229 (намеренная квотная изоляция — НЕ схлопывать) |
+| embedder | (зарезервировано, появится на этапе 3) | — |
+
+Правила: хранить канонический ID + правило префиксации `models/` (live-пути исторически
+с префиксом, REST — без); загрузка через config/loader; мёртвые потребители
+(cmd_control:109, response_composer:214) к этому моменту уже удалены шагом 0.3.
+
+### Шаг 0.7 — финальная проверка критерия готовности
+
+- `git grep -n "gemini-2\.\|gemini-3\.\|models/gemini"` — вхождения только в
+  config/registry.yaml (+ комментарии);
+- `git grep -n "api_keys.json\|gemini_api_key"` — только config/loader.py (+ ignore/шаблон);
+- полный pytest: 153 юнит + golden — зелёные;
+- ручной смоук: голосовая сессия поднимается, «открой блокнот», «прочитай файл X»,
+  «запиши в файл» → confirm, screen view работает;
+- тег `v0-stage0-done`.
+
+## 3. Pre-mortem: что может пойти не так и как это предотвращено
+
+| # | Сценарий провала | Предотвращение |
+|---|---|---|
+| 1 | Живой ключ попадает в git-историю | Порядок 0.1 (gitignore ДО init), git status --ignored глазами, контроль git log -p; ротация ключа |
+| 2 | uv sync → красная база (send2trash, google-generativeai не в requirements) | Явно добавить в pyproject до lock; эталонный прогон 153 сразу после sync |
+| 3 | `uv run pytest` не находит core/* (тесты работали только `python -m pytest` из корня) | pythonpath=["."] в pytest.ini_options |
+| 4 | Golden фиксируют баги как эталон | Явный список KNOWN-BAD в сценариях (open_search_source, agent_task-дыра, потеря текста); решение по каждому ДО записи эталона |
+| 5 | Удаление youtube_video/desktop ломает импорт main.py | cv2/numpy/pyautogui удаляются только из мёртвых модулей; screen_processor (cv2) не трогается; после каждого подшага — импорт-смоук `python -c "import main"` |
+| 6 | game_updater --scheduled прописан в Task Scheduler → внешняя поломка | schtasks /query до удаления |
+| 7 | Setup-экран ui.py стирает camera_index/timezone | Фикс деструктивной перезаписи в 0.5 (read-merge-write) |
+| 8 | Registry «оптимизирует» модели и ломает квотную изоляцию | Роли зеркалят текущее состояние; fix_legacy отдельной ролью; правило «поведение не меняется» |
+| 9 | Артефакты Джарвиса грязнят git при golden-прогонах | Пути песочницы в .gitignore с шага 0.1 |
+| 10 | Config-рефакторинг ломает импорт security → fail-open гейта молча | Golden-тест «гейт вызывается» (0.4) написан ДО 0.5 |
+| 11 | Смена текстов ответов ломает record_action-эвристику | Правило 0.5.5: тексты не трогаем на этапе 0 |
+| 12 | Дубли констант (LIVE_MODEL ×2, SCREEN_VIEW_LIVE_MODEL ×2) — правка в одном месте | Оба дубля каждой константы в таблице 0.6; grep-гейт 0.7 ловит остатки |
+| 13 | Переходный fallback на api_keys.json костенеет | Календарный лимит 2 недели (правило «старый путь УДАЛЁН»), напоминание в ARCHITECTURE.md |
+| 14 | Старый SDK: глобальный genai.configure и параллельные вызовы | На этапе 0 источник ключа один — конфликтов нет; полная миграция SDK — этап 5 |
+
+## 4. Решения, требующие подтверждения мейнтейнера
+
+1. **flight_finder**: рекомендация — удалить заглушку, policy → blocked (сейчас тройное
+   расхождение: allowed в policy + «живой» в промптах при функции-заглушке).
+2. **open_search_source**: мёртв в обоих путях (нет в SECURITY_POLICY → Unknown tool).
+   Варианты: (а) добавить в policy allowed — восстановить задокументированное поведение
+   (маленький фикс, но это изменение поведения); (б) зафиксировать как KNOWN-BAD и
+   решить на этапе 1. Рекомендация — (б), этап 0 не меняет поведение.
+3. **Ротация ключа Gemini** — сейчас или отложить (рекомендация: сейчас, 5 минут).
+4. **Секреты**: файл в ignore (проще) vs keyring/DPAPI сразу (правильнее по §5.8).
+   Рекомендация: файл на этапе 0, keyring — отдельным коммитом позже.
+
+## 5. Definition of Done этапа 0
+
+- [ ] git-репозиторий с чистой историей (ключа нет ни в одном коммите), тег v0-stage0-done
+- [ ] uv.lock + pyproject.toml; `uv run pytest` воспроизводимо зелёный на чистой машине
+- [ ] Мёртвый код удалён (~3.2–3.5k строк), «SECURITY-заглушек» в actions/ нет
+- [ ] 20–30 golden-сценариев в tests/golden/, включая confirm/blocked/SCREEN/agent_task-пары
+- [ ] Один модуль config; grep не находит чтения ключа вне config/
+- [ ] registry.yaml; grep не находит имён моделей вне config/
+- [ ] Поведение системы не изменилось (golden это доказывают)
+- [ ] Фичефриз прототипа объявлен (правило миграции)
