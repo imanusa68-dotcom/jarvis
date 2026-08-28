@@ -3,8 +3,8 @@ Jarvis Mark XXXVI. Метка сборки. Этот файл пишет код,
 Строки вида ключ = значение читает код. Руками их менять бессмысленно.
 
 stamp_ver = 1
-written_at = 2026-08-28T16:31:32
-written_at_utc = 2026-08-28T16:31:32Z
+written_at = 2026-08-28T16:44:32
+written_at_utc = 2026-08-28T16:44:32Z
 written_by = tests
 code_ver = 1.21
 phase = 1
@@ -15,8 +15,8 @@ python = 3.12.14
 platform = Linux-6.1.155-x86_64-with-glibc2.41
 tests_total = 1807
 tests_failed = 17
-tests_seconds = 37.21
-tests_at = 2026-08-28T16:31:32
+tests_seconds = 33.43
+tests_at = 2026-08-28T16:44:32
 tests_scope = полный прогон
 tests_source = python -m pytest -q
 home_at = 2026-08-23T02:53:32
