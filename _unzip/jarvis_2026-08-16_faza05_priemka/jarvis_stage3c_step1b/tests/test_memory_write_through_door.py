@@ -33,62 +33,26 @@ import pytest
 
 # ── Ловушка 2 из исследования: дверь не знает forget/recall ───────────────────
 
-def test_the_door_still_does_not_know_forgetting_and_recalling():
-    """Дверь отвечает 'нельзя' на forget/recall — и это НЕ должно меняться.
-
-    Сторож стоит не ради двери, а ради ПРАВКИ: если кто-то решит «провести
-    через дверь всю память» и перенесёт общий блок выше, забывание и
-    вспоминание умрут молча — дверь заблокирует их как неизвестные. Тест
-    фиксирует причину, по которой правка фазы 1в осталась узкой.
-    """
-    from core import gate
-
-    save = gate.dispatch("save_memory", {"key": "k", "value": "v"})
-    assert save.allowed, "владельцу закрыли запись в память — риск подняли?"
-
-    for tool in ("forget_memory", "recall_memory"):
-        r = gate.dispatch(tool, {"key": "k"})
-        assert not r.allowed, (
-            f"{tool} внезапно разрешён дверью. Если его добавили в политику "
-            "осознанно — обновите этот тест и калибровку риска. Если нет — "
-            "у двери появился неучтённый инструмент памяти.")
-        assert "Unknown tool" in (r.message or ""), (
-            f"{tool} блокируется по другой причине, чем 'неизвестен': "
-            f"{r.message!r}. Смысл сторожа изменился — разберитесь.")
-
-
-def test_forgetting_and_recalling_are_not_routed_through_the_door(monkeypatch):
-    """forget_memory и recall_memory работают, НЕ спрашивая двери.
-
-    Это прямая защита от поломки, которую тесты не увидели бы иначе: 1831
-    сторож остался бы зелёным, а владелец обнаружил бы голосом, что Джарвис
-    «забыл, как забывать».
-    """
-    main = pytest.importorskip("main")
-    jl = _fake_jarvis(main, monkeypatch)
-
-    hits = []
-    import core.security as sec
-    real = sec.check_tool_call
-    monkeypatch.setattr(sec, "check_tool_call",
-                        lambda *a, **k: hits.append(a[0]) or real(*a, **k))
-
-    monkeypatch.setattr("memory.memory_manager.forget",
-                        lambda *a, **k: "Forgotten: k", raising=False)
-    monkeypatch.setattr("memory.fact_store.recall",
-                        lambda *a, **k: "нашёл: кофе", raising=False)
-
-    asyncio.run(jl._execute_tool(SimpleNamespace(
-        name="forget_memory", args={"key": "k"}, id="1")))
-    asyncio.run(jl._execute_tool(SimpleNamespace(
-        name="recall_memory", args={"query": "кофе"}, id="2")))
-
-    assert "forget_memory" not in hits, (
-        "forget_memory пошёл через дверь — она ответит 'Unknown tool' и "
-        "забывание сломается")
-    assert "recall_memory" not in hits, (
-        "recall_memory пошёл через дверь — она ответит 'Unknown tool' и "
-        "вспоминание сломается")
+# ── Два сторожа этого места ПЕРЕЕХАЛИ (фаза 1г, 28.08.2026) ──────────────────
+#
+# Здесь стояли `test_the_door_still_does_not_know_forgetting_and_recalling` и
+# `test_forgetting_and_recalling_are_not_routed_through_the_door`. Они
+# закрепляли ПРОШЛОЕ положение: дверь не знает forget/recall, и оба
+# инструмента ходят мимо неё — иначе умерли бы с ответом "Unknown tool".
+#
+# Первый из них честно писал в тексте отказа: «Если его добавили в политику
+# осознанно — обновите этот тест и калибровку риска». Ровно это и произошло:
+# оба инструмента внесены в `core/security.py` с риском low, `forget_memory`
+# встал в забор рядом с `save_memory`, а блок двери в `main.py` расширен на
+# все три инструмента памяти.
+#
+# Замена — `tests/test_forgetting_through_the_door.py`, 11 сторожей, из них
+# прямые наследники этих двух:
+#   * test_the_door_now_knows_forgetting_and_recalling
+#   * test_forgetting_and_recalling_are_routed_through_the_door
+#
+# Тесты не удалены молча и не переписаны «под зелёное»: они проверяли
+# настоящее свойство, которое сознательно изменено решением владельца.
 
 
 # ── Главное: запись в память теперь видна в журнале ───────────────────────────
