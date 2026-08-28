@@ -304,6 +304,162 @@ def test_two_calls_on_the_same_day_and_role_share_one_total_row(db):
     assert len(day) == 1 and day[0]["calls_n"] == 3 and day[0]["in_tokens"] == 3
 
 
+# -- Длительность вызова, колонка ms --------------------------------------
+#
+# Долг блока 5: колонка была объявлена в миграции 10 и ВСЕГДА писалась как
+# NULL. Сторожа ниже стерегут не «число появилось», а три смысла, которые
+# легко потерять молча:
+#   * пусто и ноль — разные вещи;
+#   * считаем монотонными часами, а не по календарной метке в базе;
+#   * засечка не остаётся сиротой на выходах, где строки в базе нет.
+
+def test_the_duration_is_written_and_is_not_empty(db):
+    """Долг блока 5 закрыт: раньше здесь ВСЕГДА был NULL."""
+    mt.reset_started_for_tests()
+    got = mt.reserve("aux_light", conn=db)
+    mt.commit(got["call_id"], in_tokens=10, out_tokens=5, conn=db)
+    row = _rows(db)[0]
+    assert row["ms"] is not None, "колонка снова пустая — долг вернулся"
+    assert 0 <= row["ms"] < 60_000, row["ms"]
+
+
+def test_a_failed_call_also_gets_its_duration(db):
+    """Провал длится тоже, и часто ДОЛЬШЕ удачи: там повторы и паузы.
+    Мерить только удачные значило бы не увидеть самые долгие ожидания."""
+    mt.reset_started_for_tests()
+    got = mt.reserve("aux_light", conn=db)
+    mt.commit(got["call_id"], ok=False, err_kind="network", conn=db)
+    row = _rows(db)[0]
+    assert row["ok"] == 0 and row["ms"] is not None
+
+
+def test_an_unknown_duration_stays_empty_and_never_becomes_zero(db):
+    """Ноль означает «быстрее миллисекунды» — это ФАКТ о вызове.
+
+    Здесь факта нет: резерв занят до перезапуска, словарь засечек пуст.
+    Записать ноль значило бы соврать «ответ пришёл мгновенно», и первый же
+    средний по колонке стал бы неправдой.
+    """
+    got = mt.reserve("aux_light", conn=db)
+    mt.reset_started_for_tests()                  # как после перезапуска
+    mt.commit(got["call_id"], conn=db)
+    assert _rows(db)[0]["ms"] is None, "неизвестность записали нулём"
+
+
+def test_a_reserve_closed_as_lost_has_no_duration(db):
+    """Уборка не знает, сколько длился вызов, которого никто не закрыл.
+    Поставить ей любое число — выдумать его."""
+    old = datetime(2026, 8, 18, 6, 0, tzinfo=timezone.utc)
+    mt.reserve("aux_light", conn=db, now_utc=old)
+    db.execute("UPDATE mx_meter_call SET started_utc=?", (old.isoformat(),))
+    assert mt.close_lost(conn=db, older_than_s=1,
+                         now_utc=datetime(2026, 8, 18, 9, 0,
+                                          tzinfo=timezone.utc)) == 1
+    row = _rows(db)[0]
+    assert row["err_kind"] == "lost" and row["ms"] is None
+
+
+def test_the_duration_ignores_the_calendar_clock(db):
+    """Часы сверяются по сети и ПРЫГАЮТ; монотонные — нет.
+
+    Календарную метку в базе сдвигаем на час назад — так выглядел бы день
+    подводки часов. Если бы длительность считалась как `now - started_utc`,
+    здесь появился бы час. Урок блока 10: правильность не должна зависеть
+    от того, что показывают календарные часы.
+
+    Настоящие часы НЕ подменяем нарочно: подделка одних часов из двух
+    проверяет не то, что живёт.
+    """
+    mt.reset_started_for_tests()
+    got = mt.reserve("aux_light", conn=db)
+    shifted = datetime(2020, 1, 1, 0, 0, tzinfo=timezone.utc).isoformat()
+    db.execute("UPDATE mx_meter_call SET started_utc=? WHERE call_id=?",
+               (shifted, got["call_id"]))
+    mt.commit(got["call_id"], conn=db)
+    assert _rows(db)[0]["ms"] < 60_000, "длительность взяли из календаря"
+
+
+def test_a_second_commit_does_not_invent_a_bigger_duration(db):
+    """Второй `commit` по тому же талону пишет пусто, а не удвоенное число.
+
+    Отметка забирается насовсем. Иначе повторное закрытие приписало бы
+    вызову всё время, что прошло с его начала, — и запись стала бы тем
+    хуже, чем позже её повторили.
+    """
+    mt.reset_started_for_tests()
+    got = mt.reserve("aux_light", conn=db)
+    mt.commit(got["call_id"], conn=db)
+    first = _rows(db)[0]["ms"]
+    assert first is not None
+    mt.commit(got["call_id"], conn=db)
+    assert _rows(db)[0]["ms"] is None, "второй раз выдумал длительность"
+
+
+def test_a_refused_call_leaves_no_orphan_mark(db, monkeypatch):
+    """Отказ по потолку идёт СЕРИЯМИ, и каждый оставлял бы засечку.
+
+    Найдено проверкой своей же правки 28.08.2026. Вред не в памяти:
+    накопив потолок словаря, сироты начали бы выдавливать ЖИВЫЕ засечки
+    настоящих вызовов — и `ms` соврала бы пустотой именно в тот день,
+    когда квота на исходе.
+    """
+    monkeypatch.setattr(mt, "caps", lambda: {mt.PAID_BUCKET: 0,
+                                             mt.CHEAP_BUCKET: 0})
+    mt.reset_started_for_tests()
+    for _ in range(5):
+        assert mt.reserve("aux_light", conn=db)["allowed"] is False
+    assert mt.started_count_for_tests() == 0, "отказы оставили сирот"
+
+
+def test_a_broken_meter_leaves_no_orphan_mark(monkeypatch):
+    """Второй выход без строки в базе: касса сломалась, дело пускаем дальше.
+    `commit` такую строку не найдёт, значит засечку убираем сами."""
+    from core import writer
+
+    def _boom(fn, **kw):
+        raise RuntimeError("базы нет")
+    monkeypatch.setattr(writer, "write", _boom)
+    mt.reset_for_tests()
+    mt.reset_started_for_tests()
+    for _ in range(3):
+        assert mt.reserve("aux_light")["why"] == "meter_offline"
+    assert mt.started_count_for_tests() == 0, "поломка кассы плодит сирот"
+
+
+def test_the_marks_cannot_grow_without_bound():
+    """Процесс живёт неделями. Если `commit` не придёт вовсе (процесс убит
+    на полпути), засечки копились бы вечно — потолок держит их число.
+
+    Выбрасываются САМЫЕ СТАРЫЕ: у молодых засечек шанс дождаться своего
+    `commit` выше, чем у тех, что висят с прошлой недели.
+    """
+    mt.reset_started_for_tests()
+    try:
+        for n in range(mt._STARTED_MAX + 20):
+            mt._mark_start(f"C-{n:06d}")
+        assert mt.started_count_for_tests() <= mt._STARTED_MAX
+        assert "C-000000" not in mt._started_at, "выбросили не самые старые"
+        assert f"C-{mt._STARTED_MAX + 19:06d}" in mt._started_at
+    finally:
+        mt.reset_started_for_tests()      # не оставляем мусор соседям
+
+
+def test_the_duration_is_never_negative(db):
+    """Отрицательное число в этой колонке было бы неотличимо от порчи."""
+    mt.reset_started_for_tests()
+    got = mt.reserve("aux_light", conn=db)
+    mt.commit(got["call_id"], conn=db)
+    assert _rows(db)[0]["ms"] >= 0
+
+
+def test_the_schema_explains_the_column():
+    """У всех соседних колонок есть комментарий, у `ms` не было ни строчки —
+    верный признак «дописали, чтобы было». Второй раз так не оставим."""
+    body = (ROOT / "core" / "store.py").read_text(encoding="utf-8")
+    head = body.split("mx_meter_day_idx")[0]
+    assert "#   ms" in head, "колонка ms снова без объяснения"
+
+
 # -- Остаток --------------------------------------------------------------
 
 def test_remaining_answers_with_numbers_not_percents(db):
