@@ -52,6 +52,44 @@ BEHAVIOR = (ROOT / "core" / "prompts" / "06_behavior.txt").read_text(
 BEHAVIOR_FLAT = re.sub(r"\s+", " ", BEHAVIOR)
 
 
+def _py_block(text: str, anchor: str) -> str:
+    """Тело блока Python от `anchor` до первой строки с отступом не больше.
+
+    ПОЧЕМУ ЭТО ЗАМЕНИЛО «ОКНО В 700 ЗНАКОВ»
+    Окна фиксированной длины уже подводили в этом файле дважды: сначала
+    ±400 знаков не хватило на комментарий, потом 700 не хватило на сам
+    блок `tool_call` (он 1530 знаков). Такой сторож краснеет от ДЛИНЫ
+    соседнего текста, а не от потери правила — то есть врёт в обе
+    стороны: и пропускает, и обвиняет невиновного. Границу надо брать из
+    файла, а не выдумывать.
+    """
+    i = text.index(anchor)
+    line_start = text.rfind("\n", 0, i) + 1
+    indent = len(text[line_start:i])
+    lines = text[line_start:].splitlines(keepends=True)
+    for n, ln in enumerate(lines[1:], 1):
+        if ln.strip() and len(ln) - len(ln.lstrip()) <= indent:
+            return "".join(lines[:n])
+    return text[line_start:]
+
+
+def _prompt_rule(anchor: str) -> str:
+    """Один пункт списка промпта: от `- ANCHOR` до следующего пункта того же
+    уровня.
+
+    По той же причине: правило второго захода удлинило пункт, и проверка
+    по окну «900 знаков» потеряла образец «noted, sir», хотя тот стоял на
+    месте. Здесь граница — начало следующего пункта, то есть смысл.
+    """
+    i = BEHAVIOR.lower().index(anchor.lower())
+    line_start = BEHAVIOR.rfind("\n", 0, i) + 1
+    indent = len(BEHAVIOR[line_start:].split("-")[0])
+    rest = BEHAVIOR[line_start:]
+    m = re.search(r"\n {0,%d}- " % indent, rest[1:])
+    block = rest[: m.start() + 1] if m else rest
+    return re.sub(r"\s+", " ", block)
+
+
 # ── 1. Прибор различает то, чего не различал старый сторож ───────────────────
 
 def test_the_real_case_from_the_owners_log_is_now_visible():
@@ -113,8 +151,7 @@ def test_the_wording_says_whether_words_matched():
 def test_main_marks_the_boundary_at_the_tool_call():
     """Отметка ставится в блоке tool_call, иначе граница снова потеряется."""
     assert "said_before_tool" in MAIN, "отметка границы исчезла из main.py"
-    i = MAIN.index("if response.tool_call")
-    block = MAIN[i: i + 700]
+    block = _py_block(MAIN, "if response.tool_call")
     assert "said_before_tool = len(out_buf)" in block, (
         "отметка больше не ставится при вызове инструмента"
     )
@@ -126,8 +163,7 @@ def test_the_boundary_is_marked_only_once_per_turn():
     Без этой проверки вторая отметка съела бы реплику, сказанную между
     вызовами, и дефект стал бы невидимым именно в самом сложном случае.
     """
-    i = MAIN.index("if response.tool_call")
-    block = MAIN[i: i + 700]
+    block = _py_block(MAIN, "if response.tool_call")
     assert "if said_before_tool < 0" in block, (
         "пропала защита от повторной отметки при нескольких вызовах"
     )
@@ -188,9 +224,11 @@ def test_the_exception_names_the_silent_memory_tools():
     """
     low = BEHAVIOR_FLAT.lower()
     assert "save_memory" in low and "forget_memory" in low
-    i = low.index("one answer per turn")
-    block = low[i: i + 900]
-    assert "save_memory" in block, (
+    # Второй заход вынес save_memory в СОСЕДНИЙ пункт (теперь у него
+    # своё правило — отвечать ДО вызова), поэтому смотрим оба пункта.
+    both = _prompt_rule("ONE ANSWER PER TURN").lower() + " " + _prompt_rule(
+        "save_memory IS THE ONE TOOL").lower()
+    assert "save_memory" in both, (
         "исключение не упоминает save_memory — именно на нём дефект и жил"
     )
 
@@ -201,10 +239,12 @@ def test_the_rule_forbids_the_report_wording_the_owner_heard():
     Пример нужен потому, что запрет без образца модель обходит: она считает
     доклад «естественным ответом», как её и просили выше.
     """
-    i = BEHAVIOR_FLAT.lower().index("one answer per turn")
-    block = BEHAVIOR_FLAT[i: i + 900].lower()
-    assert "noted, sir" in block, "пропал образец лишнего доклада"
-    assert "two" in block, "не сказано, что это считается ДВУМЯ ответами"
+    # Образец расписки переехал во втором заходе в пункт про save_memory —
+    # там ему и место: именно там единственный ответ можно сделать докладом.
+    both = _prompt_rule("ONE ANSWER PER TURN").lower() + " " + _prompt_rule(
+        "save_memory IS THE ONE TOOL").lower()
+    assert "noted, sir" in both, "пропал образец лишнего доклада"
+    assert "two" in both, "не сказано, что это считается ДВУМЯ ответами"
 
 
 def test_the_rule_does_not_contradict_the_slow_tool_rule():
@@ -213,8 +253,7 @@ def test_the_rule_does_not_contradict_the_slow_tool_rule():
     Иначе владелец получит тишину на 30 секунд поиска — это была бы замена
     одного дефекта другим, худшим.
     """
-    i = BEHAVIOR_FLAT.lower().index("one answer per turn")
-    block = BEHAVIOR_FLAT[i: i + 900].lower()
+    block = _prompt_rule("ONE ANSWER PER TURN").lower()
     assert "slow tool" in block, (
         "правило не оговаривает медленные инструменты и потому запрещает "
         "нужную реплику перед долгим ожиданием"
