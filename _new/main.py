@@ -666,7 +666,12 @@ TOOL_DECLARATIONS = [
             "what to warn about before acting, what never to suggest. "
             "A standing instruction is NOT obeyed-and-forgotten: agreeing in the "
             "conversation lasts only until restart, so you MUST save it as well. "
-            "Call this silently whenever either kind comes up. "
+            # ШАГ 2''. Было «Call this silently whenever either kind comes up».
+            # Слово «silently» здесь лишнее: ниже стоит отдельное правило «Do
+            # NOT announce that you are saving — just call it silently», и оно
+            # разобрано подробнее. Убрал повтор, чтобы влезть в потолок знаков
+            # честным сокращением, а не поднятием потолка.
+            "Call this whenever either kind comes up. "
             # ШАГ 1, 29.08.2026. Критерий В1+В2 прямым текстом. Раньше здесь
             # был только запрет («не пиши сиюминутное»), и модель понимала его
             # шире, чем нужно: фраза «кот опять лёг на клавиатуру» — событие,
@@ -685,10 +690,42 @@ TOOL_DECLARATIONS = [
             "not miss: 'the cat is on my keyboard again' is an event, but it "
             "reveals that they have a cat — save the cat, not the keyboard. "
             "'Went fishing with Lyokha' reveals a friend named Lyokha. "
+            # ШАГ 2'', 29.08.2026. ДВА ЖИВЫХ ОТКАЗА ИЗ ОДНОГО ЖУРНАЛА, и они
+            # ПРОТИВОПОЛОЖНЫЕ — поэтому крутить «строже/мягче» бесполезно:
+            #   1) «кот опять лёг на клавиатуру» -> записалось
+            #      notes/cat_on_keyboard_event='Cat is on the keyboard again'.
+            #      Ключ буквально _event. Запрет на события был НА МЕСТЕ и
+            #      разобран на этом же примере — значит правило модель знает.
+            #      Причина (probe35): свойство «есть кот» УЖЕ было записано
+            #      (cat_name=Tigr), извлекать нечего, а давление писать
+            #      осталось. Не было сказано, что бывает НЕЧЕГО записывать.
+            #   2) «бл опять алекс сломал мой телефон» -> НЕ записалось НИЧЕГО,
+            #      хотя Алекса в relationships нет, а «опять» говорит, что он
+            #      в жизни владельца постоянный. Ровно случай Лёхи из Ш1.
+            #      Причина (probe36): пример был только РАЗРЕШАЮЩИЙ (рыбалка
+            #      открывает друга); что новый ЧЕЛОВЕК — это свойство даже в
+            #      брани и жалобе, сказано не было.
+            "NOTHING NEW IS A VALID OUTCOME. If the property behind a remark "
+            "is ALREADY in the memory block, do not call this tool at all. "
+            "'The cat is on my keyboard again' when you already know the cat "
+            "adds nothing, and saving it as cat_on_keyboard_event stores a "
+            "moment that is false an hour later. Calling this with nothing new "
+            "is worse than not calling it. "
+            "BUT A NEW PERSON IS ALWAYS A PROPERTY, however the sentence "
+            "sounds. Complaints, swearing and anger still carry facts: 'Alex "
+            "broke my phone AGAIN' names a person who is not in your memory "
+            "yet, and 'again' says he is a permanent part of their life — save "
+            "Alex. Never skip a fact because the tone was rude or negative; "
+            "you are not being asked to approve of it, only to remember it. "
             "Do NOT call for: passing moods ('I'm tired today'), one-time commands "
             "('open notepad'), questions, reactions, weather, reminders, or searches "
             "when no property hides inside them. "
-            "Those belong to this conversation and must die with it. "
+            # ШАГ 2''. Здесь стояло «Those belong to this conversation and must
+            # die with it» — та же мысль, что в правиле про событие двумя
+            # абзацами выше («An event is over when the sentence ends»), только
+            # другими словами. Убрал вместо того, чтобы поднимать потолок
+            # знаков в тесте: повтор занимает промпт и ничего не добавляет.
+
             # ШАГ 2′, 29.08.2026. ВЛАДЕЛЕЦ УСЛЫШАЛ ДЕЛОПРОИЗВОДИТЕЛЯ, а не
             # Джарвиса: «Отмечено, сэр. У вас есть друг по имени Лёха»,
             # «Обновляю информацию: вашего кота зовут Лев». Разобрал по живому
@@ -709,7 +746,13 @@ TOOL_DECLARATIONS = [
             "to the cat. 'Went fishing with Lyokha' is about a day off, not "
             "about a friend record being created. Reply like someone who just "
             "heard it, and file it in the background where they never see it. "
-            "If a remark deserves no reply at all, say nothing and just save. "
+            # ШАГ 2'', 29.08.2026. ЗДЕСЬ БЫЛО «say nothing and just save» —
+            # моя же формулировка, и она читается как «промолчи И ЗАПИШИ»,
+            # то есть утверждает, что запись всё равно происходит. Замер
+            # (probe35): разрешения молчать ГОЛОСОМ в тексте было целых три,
+            # а разрешения НЕ ПИСАТЬ В БАЗУ — ни одного. Для модели это
+            # разные вещи, и она подчинилась давлению.
+            "Some remarks need no reply at all — then say nothing. "
             "A correction ('no, his name is Tigr') needs no receipt either — "
             "least of all a second one. "
             # Владелец 28.08.2026 услышал ответ ДВАЖДЫ подряд («меренговый

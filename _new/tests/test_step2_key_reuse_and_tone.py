@@ -82,9 +82,18 @@ def test_the_text_says_what_to_do_instead_not_only_what_to_avoid():
 
 
 def test_silence_is_an_allowed_answer():
-    """Не на каждую фразу нужен ответ — иначе Джарвис болтает из вежливости."""
+    """Не на каждую фразу нужен ответ — иначе Джарвис болтает из вежливости.
+
+    ШАГ 2'': формулировка изменена. Было «say nothing and just save», и это
+    читалось как «промолчи И ЗАПИШИ» — то есть само создавало давление
+    писать в базу (probe35, живая запись cat_on_keyboard_event). Теперь
+    разрешение молчать голосом отделено от вопроса, писать ли вообще.
+    """
     desc = _save_memory_description().lower()
-    assert "say nothing and just save" in desc
+    assert "need no reply at all" in desc
+    assert "then say nothing" in desc
+    # и ровно та формулировка, что давила, вернуться не должна
+    assert "just save" not in desc
 
 
 def test_a_correction_gets_no_receipt():
@@ -135,6 +144,74 @@ def test_no_search_call_was_added_before_saving():
     assert "recall_memory before saving" not in _save_memory_description().lower()
 
 
+# -- ШАГ 2'': два ПРОТИВОПОЛОЖНЫХ отказа из одного живого журнала --------
+#
+# 1) записалось лишнее: notes/cat_on_keyboard_event='Cat is on the keyboard
+#    again' — ключ буквально _event, а свойство «есть кот» уже лежало;
+# 2) пропущено нужное: «бл опять алекс сломал мой телефон» — ни одного
+#    вызова save_memory, хотя Алекса в relationships нет.
+# Ошибки в разные стороны, поэтому «строже/мягче» не лечит: нужны оба
+# примера сразу.
+
+def test_nothing_new_is_allowed_to_mean_no_call_at_all():
+    """Главная причина лишней записи (probe35): разрешения НЕ ПИСАТЬ В БАЗУ
+    в тексте не было ни одного, а давление писать было трижды."""
+    desc = _save_memory_description().lower()
+    assert "nothing new is a valid outcome" in desc
+    assert "do not call this tool at all" in desc
+
+
+def test_the_already_known_cat_is_named_as_the_wrong_case():
+    """Именно эта живая запись разобрана в тексте, а не абстракция:
+    общее правило про события уже было и не помогло."""
+    desc = _save_memory_description()
+    assert "cat_on_keyboard_event" in desc
+    assert "already know the cat" in desc
+
+
+def test_calling_with_nothing_new_is_called_worse_than_not_calling():
+    """Модели нужен ЗНАК, в какую сторону ошибаться при сомнении."""
+    desc = _save_memory_description().lower()
+    assert "worse than not calling it" in desc
+
+
+def test_a_new_person_is_a_property_even_in_a_rude_sentence():
+    """Пропуск Алекса (probe36): пример был только РАЗРЕШАЮЩИЙ (рыбалка с
+    Лёхой). Что новый человек — свойство даже в брани, сказано не было."""
+    desc = _save_memory_description().lower()
+    assert "a new person is always a property" in desc
+    assert "alex" in desc
+    assert "again" in desc
+
+
+def test_rude_tone_is_explicitly_not_a_reason_to_skip_a_fact():
+    """Владелец говорит с матом. Джарвис не должен принимать это за
+    команду «не запоминай»."""
+    desc = _save_memory_description().lower()
+    assert "swearing" in desc
+    assert "not being asked to approve" in desc
+
+
+def test_the_two_opposite_mistakes_are_both_covered():
+    """Смысловая проверка целиком: в тексте есть И тормоз, И педаль.
+
+    Если однажды останется только одно, маятник качнётся, и падение этого
+    теста скажет, какую половину потеряли.
+    """
+    desc = _save_memory_description().lower()
+    brake = "do not call this tool at all" in desc
+    gas = "a new person is always a property" in desc
+    assert brake and gas, f"тормоз={brake}, педаль={gas}"
+
+
+def test_the_removed_duplicates_did_not_come_back():
+    """Перед поднятием потолка знаков я сократил три повтора. Если они
+    вернутся, описание молча распухнет снова."""
+    desc = _save_memory_description()
+    assert "Those belong to this conversation" not in desc
+    assert "Call this silently whenever either kind" not in desc
+
+
 # -- цена: описание отправляется каждую сессию ---------------------------
 
 def test_the_description_stays_within_a_sane_size():
@@ -145,6 +222,20 @@ def test_the_description_stays_within_a_sane_size():
     """
     desc = _save_memory_description()
     assert len(desc) < 4500, f"описание save_memory выросло до {len(desc)} знаков"
+
+
+def test_the_pressure_to_always_write_is_gone():
+    """Корень лишней записи — мои же слова, читавшиеся как «всё равно пиши».
+
+    Тест сторожит именно формулировки, а не смысл: если кто-то вернёт
+    «just save» или «file it» без оговорки, давление вернётся вместе с ними.
+    """
+    desc = _save_memory_description().lower()
+    assert "just save" not in desc
+    # «file it in the background» осталось, но теперь оно про ТОН ответа,
+    # а не про обязанность писать — рядом обязана стоять оговорка.
+    if "file it in the background" in desc:
+        assert "nothing new is a valid outcome" in desc
 
 
 def test_no_words_got_glued_together_by_a_missing_space():
