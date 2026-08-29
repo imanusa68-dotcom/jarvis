@@ -212,7 +212,11 @@ def test_report_says_plainly_when_nothing_is_old_enough(tmp_path, monkeypatch):
 
     out = _run_report()
     assert "По времени пока ничего не скрыто" in out
-    assert "НОРМАЛЬНО" in out
+    # Текст стал точнее после живого прогона: раньше здесь было общее
+    # «это НОРМАЛЬНО», теперь рядом стоят возраст и порог. Общее слово
+    # успокаивало, но не давало проверить, что механизм видит данные.
+    assert "ОЖИДАЕМО" in out
+    assert "порог" in out
 
 
 # ── 3. Отчёт не имеет своей копии правил ──────────────────────────
@@ -280,3 +284,122 @@ def test_report_runs_as_a_script(tmp_path, monkeypatch):
         runpy.run_path(str(ROOT / "check_memory.py"), run_name="__main__")
     assert exc.value.code == 0
     assert _fingerprint(home) == before
+
+# ── 5. Отчёт различает «ждёт» и «сломано» ─────────────────────────
+# Замерено на живой памяти владельца: 35 фактов, «скрыто по сроку
+# годности: 0». Одна цифра 0 покрывает ДВА противоположных случая:
+# события есть и просто свежие (всё работает) — и механизм вообще не
+# видит его данных (сломано). Отчёт, который их не различает, отвечает
+# «успокойся» на вопрос «работает ли». Ниже это закреплено.
+
+def test_report_says_how_many_event_facts_it_watches(tmp_path, monkeypatch):
+    """Перепись событий: сколько их и сколько с читаемой датой."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "long_term.json").write_text(json.dumps({
+        "identity": {"city": {"value": "Khimki", "updated": day(3)}},
+        "relationships": {
+            "sister_visit": {"value": "sister arrives on Saturday",
+                             "updated": day(2)}},
+        "notes": {"headache_today": {"value": "headache in the evening",
+                                     "updated": day(1)}},
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setenv("JARVIS_STATE_DIR", str(home))
+
+    out = _run_report()
+    assert "Фактов о событиях" in out
+    assert "самому старому" in out
+    # Два события (sister_visit, headache_today), город — не событие.
+    assert "срок годности): 2" in out
+
+
+def test_fresh_memory_is_called_expected_not_just_empty(tmp_path, monkeypatch):
+    """Свежая память: «ОЖИДАЕМО», с возрастом и порогом рядом.
+
+    Ровно то, чего не хватило на живом прогоне: цифры, по которым видно,
+    что механизм ЖДЁТ, а не ослеп.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "long_term.json").write_text(json.dumps({
+        "notes": {"headache_today": {"value": "headache in the evening",
+                                     "updated": day(3)}},
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setenv("JARVIS_STATE_DIR", str(home))
+
+    out = _run_report()
+    assert "ОЖИДАЕМО" in out
+    assert "Механизм видит ваши факты и ждёт" in out
+    assert "3 дн." in out
+
+
+def test_no_event_facts_at_all_is_explained_not_alarming(tmp_path,
+                                                         monkeypatch):
+    """Событий нет вовсе — сказано, что скрывать нечего, и почему."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "long_term.json").write_text(json.dumps({
+        "identity": {"city": {"value": "Khimki", "updated": day(3)}},
+        "preferences": {"favorite_color": {"value": "green colour",
+                                           "updated": day(2)}},
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setenv("JARVIS_STATE_DIR", str(home))
+
+    out = _run_report()
+    assert "Фактов о событиях в памяти нет" in out
+    assert "не поломка" in out
+
+
+def test_undated_event_facts_are_named_out_loud(tmp_path, monkeypatch):
+    """Событие без даты: скрытие НЕ сработает, и это сказано прямо.
+
+    Правило намеренно не скрывает факт с неизвестным возрастом (лучше
+    оставить на виду, чем спрятать неизвестное). Но владелец, который
+    этого не знает, будет ждать скрытия, которое не придёт.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "long_term.json").write_text(json.dumps({
+        "notes": {"headache_today": {"value": "headache in the evening"}},
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setenv("JARVIS_STATE_DIR", str(home))
+
+    out = _run_report()
+    assert "БЕЗ ДАТЫ" in out
+    assert "notes/headache_today" in out
+
+
+def test_junk_facts_are_named_not_just_counted(tmp_path, monkeypatch):
+    """Мусор назван по имени: «скрыт 1» без имени нельзя проверить."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "long_term.json").write_text(json.dumps({
+        "notes": {"weird_leftover": {"value": "x", "updated": day(1)}},
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setenv("JARVIS_STATE_DIR", str(home))
+
+    from memory import memory_manager as mm
+    memory = json.loads((home / "long_term.json").read_text(encoding="utf-8"))
+    kept = mm._without_junk(memory).get("notes") or {}
+    assert "weird_leftover" not in kept, "Опора теста поехала: не мусор"
+
+    out = _run_report()
+    assert "Скрытые как мусор" in out
+    assert "notes/weird_leftover" in out
+
+
+def test_real_owner_keys_are_recognised_as_events():
+    """Настоящие ключи владельца (снято с живого прогона) — распознаны.
+
+    Не выдуманные примеры, а буквальные имена из его памяти. Если список
+    слов-маркеров однажды сузят, покраснеет здесь, а не у него.
+    """
+    from memory import memory_manager as mm
+    assert mm._is_event_key("notes", "headache_today")
+    assert mm._is_event_key("relationships", "sister_visit")
+    assert mm._is_event_key("relationships", "friend_lyokha_last_contact")
+    # А постоянные сведения событиями быть не должны.
+    assert not mm._is_event_key("identity", "city")
+    assert not mm._is_event_key("relationships", "cat_name")
+    assert not mm._is_event_key("hobbies", "gym_evenings")
+    assert not mm._is_event_key("projects", "tg_bot_creation")

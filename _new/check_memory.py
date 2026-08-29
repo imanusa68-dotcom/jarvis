@@ -89,6 +89,18 @@ def main() -> int:
     print(f"Скрыто по сроку годности (НОВОЕ):   {hidden}")
     print(f"Уезжает в промпт:                   {shown}")
 
+    if junk:
+        # Мусор скрыт ДАВНО и не этой правкой, но «скрыт 1» без имени
+        # владелец проверить не может, а непроверяемая цифра — не отчёт.
+        print("\nСкрытые как мусор (на диске целы, это старое поведение):")
+        for category, entries in memory.items():
+            if not isinstance(entries, dict):
+                continue
+            kept = no_junk.get(category) or {}
+            for key in entries:
+                if key not in kept:
+                    print(f"  {category}/{key}")
+
     # Что именно скрыто по времени и почему — по одной строке на факт.
     # Без этого списка отчёт нельзя ни проверить, ни оспорить.
     rotten = []
@@ -112,14 +124,62 @@ def main() -> int:
             elif age > _EXPIRY_FRESH_DAYS:
                 labelled.append((age, category, key, value))
 
+    # ПЕРЕПИСЬ ФАКТОВ О СОБЫТИЯХ. Без неё «скрыто 0» неразличимо с двумя
+    # совсем разными положениями дел: «события есть, просто свежие» (всё
+    # хорошо) и «механизм вообще не видит ваших данных» (сломано). Отчёт,
+    # который эти два случая путает, успокаивает вместо того чтобы мерить.
+    events = 0
+    dated = 0
+    oldest = None
+    undated = []
+    for category, entries in memory.items():
+        if not isinstance(entries, dict):
+            continue
+        for key, entry in entries.items():
+            if not _is_event_key(category, key):
+                continue
+            events += 1
+            age = _fact_age_days(entry, today)
+            if age is None:
+                undated.append(f"{category}/{key}")
+                continue
+            dated += 1
+            if oldest is None or age > oldest:
+                oldest = age
+
+    print(f"\nФактов о событиях (за ними следит срок годности): {events}")
+    print(f"  из них с читаемой датой:                        {dated}")
+    if oldest is not None:
+        print(f"  самому старому из них:                          {oldest} дн.")
+        print(f"  порог скрытия:                                  "
+              f"{_EXPIRY_STALE_DAYS} дн.")
+    if undated:
+        # Без даты возраст неизвестен, и правило НЕ скрывает — так решено
+        # намеренно: молча спрятать факт, про который ничего не известно,
+        # хуже, чем оставить его на виду. Но владелец должен знать, что
+        # такие есть, иначе он ждёт скрытия, которого не будет.
+        print(f"  БЕЗ ДАТЫ (возраст неизвестен, скрытие не сработает): "
+              f"{len(undated)}")
+        for name in undated[:10]:
+            print(f"      {name}")
+
     if rotten:
         print("\n" + "-" * 72)
         print("СКРЫТО ПО ВРЕМЕНИ (на диске цело, recall_memory найдёт):")
         for age, cat, key, value in sorted(rotten, reverse=True):
             print(f"  [{age:>4} дн.] {cat}/{key}: {value}")
+    elif events and dated:
+        print("\nПо времени пока ничего не скрыто — и это ОЖИДАЕМО:")
+        print(f"самому старому событию {oldest} дн., порог "
+              f"{_EXPIRY_STALE_DAYS} дн. Механизм видит ваши факты и ждёт.")
+    elif events:
+        print("\nСобытия найдены, но ни у одного нет читаемой даты.")
+        print("Скрытие по времени на них не сработает — возраст неизвестен.")
     else:
-        print("\nПо времени пока ничего не скрыто.")
-        print(f"Это НОРМАЛЬНО, если памяти меньше порога: {_EXPIRY_STALE_DAYS} дней.")
+        print("\nФактов о событиях в памяти нет — скрывать нечего.")
+        print("Это не поломка: срок годности касается только событий")
+        print("(«вчера», «сегодня», «приезд», «звонил»), а не постоянных")
+        print("сведений вроде города, привычек и предпочтений.")
 
     if labelled:
         print("\n" + "-" * 72)
