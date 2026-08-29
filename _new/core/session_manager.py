@@ -96,6 +96,14 @@ class SessionManager:
 
 # Text patterns that indicate a transient/network/close error → recoverable
 _RECOVERABLE_PATTERNS: List[str] = [
+    # 1006 добавлен 29.08.2026. Живой лог владельца показал обрыв
+    # `APIError: 1006 None. abnormal closure [internal]` — Google уронил
+    # сессию сам, Джарвис переподключился за 3.0с, то есть по сути это
+    # штатный обрыв. Но замер показал, что 1006 не считался НИ
+    # восстановимым, НИ фатальным, и потому печатался полный traceback
+    # (main.py:2048) — ровно тот шум, на который жаловался владелец.
+    # Слово "close" здесь не помогало: в "closure" его нет (c-l-o-s-u-r-e).
+    "1006", "abnormal closure",
     "1011", "1001", "1000",
     "closed", "closing", "close",
     "cancelled", "cancel",
@@ -117,7 +125,7 @@ _RECOVERABLE_PATTERNS: List[str] = [
 ]
 
 # HTTP status codes that are transient
-_RECOVERABLE_HTTP_CODES = {429, 500, 502, 503, 504, 1000, 1001, 1011}
+_RECOVERABLE_HTTP_CODES = {429, 500, 502, 503, 504, 1000, 1001, 1006, 1011}
 
 # Text patterns that indicate a fatal/config error → do NOT reconnect
 _FATAL_PATTERNS: List[str] = [

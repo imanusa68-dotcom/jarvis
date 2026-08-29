@@ -1003,6 +1003,11 @@ class JarvisLive:
         self._speaking_lock  = threading.Lock()
         self._turn_done      = False
         self._stop_event:    asyncio.Event | None = None
+        # Сколько прожила последняя сессия. Считается в `finally` внутри
+        # `_run_session` и потому доступно даже когда сессия умерла с ошибкой:
+        # без этого долгая здоровая сессия, оборванная сетью, считалась бы
+        # отказом и зря двигала предохранитель (замер probe12).
+        self._last_uptime    = 0.0
 
         # ── Centralized session state ────────��───────────────────────────────
         self._sm = SessionManager()
@@ -2232,9 +2237,21 @@ class JarvisLive:
                             print(f"[JARVIS] Task {t.get_name()} non-recoverable: {result}")
 
         finally:
-            uptime = asyncio.get_event_loop().time() - session_start
+            # Здесь НЕЛЬЗЯ писать `return uptime`. Замер (probe10) показал: `return`
+            # внутри `finally` поглощает ЛЮБОЕ исключение, и тогда ниже в `run`
+            # становятся недостижимы сразу три ветки — `except CancelledError`
+            # (остановка по Ctrl+C), `except Exception` и `if is_fatal_error(...)`.
+            # Живьём это значило: при неверном ключе API Джарвис вечно ходил по
+            # кругу переподключений вместо остановки с внятной ошибкой, потому что
+            # `is_fatal_error` не вызывалась НИКОГДА — единственный её вызов стоял
+            # в мёртвой ветке. Уборка обязана идти всегда, а вот возврат значения —
+            # только когда сессия закончилась без исключения.
+            self._last_uptime = asyncio.get_event_loop().time() - session_start
             await self._cleanup()
-            return uptime
+
+        # Досюда доходим только штатным путём. Если сессия умерла с исключением,
+        # оно летит выше — в `run`, где его классифицируют.
+        return self._last_uptime
 
     # ─────────────────────────────────────────────────────────────────────────
     # Main reconnect loop
@@ -2408,7 +2425,18 @@ class JarvisLive:
                     print(f"[JARVIS] ❌ Session ended (unexpected): {err_str}")
                     traceback.print_exc()
 
-                guard.record_failure()
+                # Отказ считаем ТОЛЬКО если сессия не успела стать устойчивой.
+                # Иначе долгая здоровая сессия (два часа работы), оборванная
+                # сетью на стороне Google, двигала бы предохранитель, и после
+                # семи таких обрывов Джарвис молчал бы три минуты на ровном
+                # месте. Замер probe12: без этой развилки предохранитель
+                # срабатывал 1 раз на 8 двухчасовых сессий, хотя связь была
+                # здоровой. `_last_uptime` посчитан в `finally` и потому
+                # доступен даже здесь, на пути исключения.
+                if self._last_uptime >= ReconnectGuard.STABLE_SECONDS:
+                    guard.record_success(self._last_uptime)
+                else:
+                    guard.record_failure()
 
             # ── Circuit breaker ───────────────────────────────��──────────────
             if guard.is_circuit_open():
