@@ -45,7 +45,20 @@ def _fresh_db():
 
 
 def _big_memory():
-    """More facts than any prompt budget can hold."""
+    """More facts than any prompt budget can hold.
+
+    ШАГ 6, 29.08.2026: количество считается ОТ бюджета, а не зашито числом 20.
+    Раньше здесь было 40 обычных фактов - при бюджете 1200 они гарантированно
+    не влезали, и тест честно проверял "блок признаётся, что что-то выкинул".
+    Когда бюджет вырос до 4000, те же 40 фактов (3194 знака) стали влезать
+    целиком, и тест упал - не потому, что поведение испортилось, а потому что
+    фикстура перестала делать то, что обещает в первой строке.
+
+    Считать от PROMPT_CHAR_BUDGET - единственный способ, при котором тест
+    остаётся осмысленным после любого следующего изменения бюджета. Если бы я
+    просто поднял 20 до 100, следующий человек, меняющий бюджет, наступил бы
+    на ту же грабли.
+    """
     memory = {
         "identity": {"name": {"value": "Rustam"}, "city": {"value": "Moscow"}},
         "communication_habits": {
@@ -57,7 +70,9 @@ def _big_memory():
         },
         "preferences": {}, "notes": {}, "projects": {},
     }
-    for i in range(20):
+    # ~60 знаков на факт, две категории => с двойным запасом перекрываем бюджет
+    per_category = max(20, mm.PROMPT_CHAR_BUDGET // 60)
+    for i in range(per_category):
         memory["preferences"][f"pref_{i}"] = {
             "value": f"a preference that takes up a fair amount of room number {i}"}
         memory["notes"][f"note_{i}"] = {

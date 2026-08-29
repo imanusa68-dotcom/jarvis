@@ -424,7 +424,41 @@ def extract_memory(user_text: str, jarvis_text: str, api_key: str) -> dict:
 # read half a sentence as if it were the whole truth, and nothing said so.
 # A budget that removes WHOLE facts and admits how many it removed is the only
 # honest way to run out of room.
-PROMPT_CHAR_BUDGET = 1200
+#
+# ШАГ 6, 29.08.2026: 1200 -> 4000. Это НЕ "на всякий случай побольше", это
+# исправление замеренной потери. Живой запуск владельца с JARVIS_DEBUG_PROMPT=1
+# показал блок 1170 знаков при бюджете 1200 и хвост "3 more saved facts did not
+# fit": до модели не доходили его заметки (notes=2) и хобби (hobbies=1) - целые
+# секции выпадали, потому что рендерятся последними.
+#
+# Почему именно 4000, а не 2000 и не 8000 (замер probe23, на настоящих длинах
+# фактов владельца - средняя 22 знака, а не выдуманные 60):
+#
+#     бюджет | фактов владельца доходит | доля системного промпта
+#       1200 |            8             |  4.1%
+#       2000 |           25             |  6.9%
+#       4000 |           65             | 13.8%   <- выбрано
+#       8000 |          146             | 27.5%
+#
+# Системный промпт уже 29064 знака и уходит каждую сессию, так что 4000 - это
+# +9.7% к тому, что и так отправляется, за рост с 8 фактов до 65. Дальше цена
+# растёт быстрее пользы: 8000 удваивает расход ради фактов, которые владелец
+# в жизни не надиктует. Ограничения на ХРАНЕНИЕ при этом нет никакого - замер
+# probe21: 3000 фактов лежат целыми, поиск среди них 24 мс. Бюджет ограничивает
+# только то, что видно СРАЗУ, без вызова recall_memory.
+PROMPT_CHAR_BUDGET = 4000
+
+# Отдельный кошелёк для правил поведения. Замер probe20 показал дефект, который
+# из одного общего бюджета не виден: 8 правил владельца занимали 751 знак из
+# 1200, то есть 63%, и сколько бы фактов он ни надиктовал, до модели доходило
+# ровно 9. Правила и факты о человеке платили из одного кармана, и правила его
+# уже выпили.
+#
+# Теперь правила берут не больше своей доли, а остальное гарантированно
+# достаётся фактам. Это НЕ освобождение правил от бюджета: если их станет
+# слишком много, лишние всё равно выпадут - но выпадут ПРАВИЛА, а не рассказ
+# владельца о себе. Обратное (правила съедают всё) как раз и было дефектом.
+_RULES_BUDGET_SHARE = 0.35
 
 # Behavioural rules are never dropped. A forgotten favourite colour is a small
 # disappointment; a forgotten "warn me before you touch my files" is a broken
@@ -467,6 +501,22 @@ def _render_prompt_sections(head: list, sections: list) -> str:
     return "\n".join(out)
 
 
+def _rules_over_share(sections: list, budget: int) -> int:
+    """Насколько правила поведения вылезли за свою долю бюджета.
+
+    ШАГ 6. Считаем ТОЛЬКО строки правил (без заголовка секции): именно они
+    отнимали место у рассказа владельца о себе. Замер probe20: 8 правил = 751
+    знак при бюджете 1200 = 63%, и обычных фактов проходило ровно 9, сколько бы
+    их ни было.
+    """
+    share = int(budget * _RULES_BUDGET_SHARE)
+    used = 0
+    for title, facts in sections:
+        if any(m in title.lower() for m in _PINNED_SECTION_MARKERS):
+            used += sum(len(line) + 1 for line in facts)
+    return max(0, used - share)
+
+
 def _fit_prompt_to_budget(head: list, sections: list, header: str,
                           budget: int) -> int:
     """Remove whole facts until the block fits. Returns how many were removed."""
@@ -474,11 +524,34 @@ def _fit_prompt_to_budget(head: list, sections: list, header: str,
         i for i, (title, _) in enumerate(sections)
         if not any(m in title.lower() for m in _PINNED_SECTION_MARKERS)
     ]
+    pinned = [i for i in range(len(sections)) if i not in droppable]
 
     dropped = 0
     length = len(header) + len(_render_prompt_sections(head, sections))
 
     everything = list(range(len(sections)))
+
+    def _pop_rule() -> bool:
+        """Убрать одно ПРАВИЛО, когда правила залезли в чужую долю.
+
+        Без этого закрепление правил работало как захват: они занимали 63%
+        бюджета, и факты владельца упирались в потолок 9 штук независимо от
+        того, сколько он рассказал. Здесь мы не отменяем приоритет правил -
+        внутри своей доли они по-прежнему неприкосновенны и уходят последними
+        (см. _pop_one). Мы лишь не даём им забрать больше своей доли.
+        """
+        nonlocal length
+        for i in reversed(pinned):
+            facts = sections[i][1]
+            # Последнее правило не забираем: одно правило поведения должно
+            # доходить всегда, иначе "предупреждай перед удалением файлов"
+            # может исчезнуть целиком, а это обещание владельцу.
+            if len(facts) <= 1:
+                continue
+            line = facts.pop()
+            length -= len(line) + 1
+            return True
+        return False
 
     def _pop_one() -> bool:
         """Remove one whole fact, ordinary sections first, pinned only if forced.
@@ -503,6 +576,14 @@ def _fit_prompt_to_budget(head: list, sections: list, header: str,
                     length -= len(sections[i][0]) + 2
                 return True
         return False        # nothing left to give up
+
+    # ШАГ 6, ПЕРВЫМ ДЕЛОМ: если правила поведения залезли за свою долю, платят
+    # они, а не рассказ владельца о себе. Порядок здесь и есть всё исправление:
+    # раньше этого прохода не было, и первым всегда страдал владелец.
+    while _rules_over_share(sections, budget) > 0:
+        if not _pop_rule():
+            break
+        dropped += 1
 
     while length > budget:
         if not _pop_one():
