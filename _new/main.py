@@ -1261,7 +1261,16 @@ class JarvisLive:
                     f"[Memory] \U0001f9e0 In prompt: {_total} facts "
                     f"({_desc}), {len(mem_str)} chars"
                 )
-                if os.getenv("JARVIS_DEBUG_PROMPT") == "1":
+                # .strip() здесь не украшение, а исправление замеренного
+                # дефекта. Владелец запустил ровно то, что я просил:
+                #     set JARVIS_DEBUG_PROMPT=1 && python main.py
+                # В cmd пробел ПЕРЕД `&&` попадает в значение переменной, то
+                # есть внутри оказывается "1 ", а не "1", и строгое == "1"
+                # молча не срабатывало: счётчик печатался, а блок — нет.
+                # Диагностика, которая тихо не включается от документированной
+                # команды, хуже отсутствующей: она заставляет искать поломку
+                # в памяти, когда сломан сам выключатель.
+                if (os.getenv("JARVIS_DEBUG_PROMPT") or "").strip() == "1":
                     print("[Memory] ---- injected block ----")
                     print(mem_str)
                     print("[Memory] ---- end of block ----")
@@ -2323,7 +2332,12 @@ class JarvisLive:
         # JARVIS_BUS_LOG=1 to watch every fact flow through the system.
         try:
             import os as _os
-            if _os.environ.get("JARVIS_BUS_LOG") == "1":
+            # .strip() по той же причине, что и у JARVIS_DEBUG_PROMPT выше:
+            # `set JARVIS_BUS_LOG=1 && python main.py` в cmd кладёт в значение
+            # "1 " с пробелом, и выключатель молча не срабатывает. Дефект
+            # найден на соседней переменной живым запуском владельца; правлю
+            # здесь сразу, чтобы он не выстрелил вторым.
+            if (_os.environ.get("JARVIS_BUS_LOG") or "").strip() == "1":
                 from core.bus import attach_console_subscriber
                 attach_console_subscriber()
                 print("[JARVIS] 📡 Event bus logging ON")
