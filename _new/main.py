@@ -667,8 +667,27 @@ TOOL_DECLARATIONS = [
             "A standing instruction is NOT obeyed-and-forgotten: agreeing in the "
             "conversation lasts only until restart, so you MUST save it as well. "
             "Call this silently whenever either kind comes up. "
+            # ШАГ 1, 29.08.2026. Критерий В1+В2 прямым текстом. Раньше здесь
+            # был только запрет («не пиши сиюминутное»), и модель понимала его
+            # шире, чем нужно: фраза «кот опять лёг на клавиатуру» — событие,
+            # поэтому не писалось НИЧЕГО, хотя в ней спрятано свойство «у
+            # владельца есть кот», которое верно и через год. Запрет без
+            # умения извлечь свойство превращается в глухоту.
+            "TWO QUESTIONS decide it. (1) Is this about THEM or about the "
+            "WORLD? Facts about the world ('the RTX 5070 ships in March') are "
+            "search results, not memory. Only they and the people, animals and "
+            "things in their life belong here. (2) Is this a PROPERTY or an "
+            "EVENT? A property holds until they change it: lives in Moscow, has "
+            "a cat, plays shooters, hates being asked twice. An event is over "
+            "when the sentence ends: tired today, went fishing yesterday, opened "
+            "notepad just now. Save PROPERTIES. "
+            "An event often REVEALS a property, and that is the case you must "
+            "not miss: 'the cat is on my keyboard again' is an event, but it "
+            "reveals that they have a cat — save the cat, not the keyboard. "
+            "'Went fishing with Lyokha' reveals a friend named Lyokha. "
             "Do NOT call for: passing moods ('I'm tired today'), one-time commands "
-            "('open notepad'), questions, reactions, weather, reminders, or searches. "
+            "('open notepad'), questions, reactions, weather, reminders, or searches "
+            "when no property hides inside them. "
             "Those belong to this conversation and must die with it. "
             "Do NOT announce that you are saving — just call it silently. "
             # Владелец 28.08.2026 услышал ответ ДВАЖДЫ подряд («меренговый
@@ -684,6 +703,20 @@ TOOL_DECLARATIONS = [
             "After the save succeeds, do NOT speak again: you have ALREADY "
             "replied in this turn, and repeating the same sentence a second "
             "time makes the assistant sound broken. One reply per turn. "
+            # ШАГ 1. Предупреждение написано ПО ЗАМЕРУ, а не по плану. План
+            # утверждал, что замена безопасна, потому что в схеме есть
+            # superseded_by. Проверил делом (probe26): upsert_fact этот столбец
+            # НЕ заполняет — повтор той же пары (категория, ключ) делает UPDATE
+            # живой строки, и прежнее значение исчезает без следа. «Mercedes»
+            # после записи «BMW» в базе не остаётся ничем.
+            # Поэтому текст говорит модели правду: замена — необратима.
+            "ONE PROPERTY, ONE KEY. Reusing a key you already saved REPLACES "
+            "the old value and the old value is GONE — there is no history to "
+            "restore it from. So reuse a key only when it is the SAME property "
+            "changing ('lives in Moscow' -> 'lives in Khimki'). When you are "
+            "not sure whether it is the same property, use a NEW key: a spare "
+            "duplicate is untidy and can be cleaned up later, but an overwrite "
+            "destroys something they told you. "
             "To REMOVE or UNDO a fact, use forget_memory — NEVER overwrite it with "
             "a value like 'disregard' or 'updated', that just leaves stale junk. "
             "Values must be in English regardless of the conversation language. "
