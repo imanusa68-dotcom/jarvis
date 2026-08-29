@@ -403,3 +403,109 @@ def test_real_owner_keys_are_recognised_as_events():
     assert not mm._is_event_key("relationships", "cat_name")
     assert not mm._is_event_key("hobbies", "gym_evenings")
     assert not mm._is_event_key("projects", "tg_bot_creation")
+
+
+# ── 6. Отчёт не врёт при выключенном выключателе ──────────────────
+# Замерено на живых данных владельца: он поставил JARVIS_MEMORY_EXPIRY
+# = false, а отчёт всё равно печатал раздел «СКРЫТО ПО ВРЕМЕНИ» — при
+# счётчике скрытых 0 и факте, спокойно уехавшем в промпт. Отчёт
+# показывал желаемое вместо действительного, то есть ровно тот дефект,
+# от которого он должен спасать. Ниже это закреплено.
+
+def _off(home: Path) -> None:
+    (home / "settings.json").write_text(
+        json.dumps({"JARVIS_MEMORY_EXPIRY": False}), encoding="utf-8")
+
+
+def test_disabled_expiry_is_shouted_not_hidden(tmp_path, monkeypatch):
+    """Выключенный срок годности назван прямо, а не подразумевается."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "long_term.json").write_text(json.dumps({
+        "notes": {"headache_today": {"value": ROT, "updated": day(40)}},
+    }, ensure_ascii=False), encoding="utf-8")
+    _off(home)
+    monkeypatch.setenv("JARVIS_STATE_DIR", str(home))
+
+    out = _run_report()
+    assert "ВЫКЛЮЧЕН" in out
+    assert "JARVIS_MEMORY_EXPIRY" in out
+
+
+def test_disabled_expiry_does_not_claim_facts_are_hidden(tmp_path,
+                                                         monkeypatch):
+    """Раздел «СКРЫТО ПО ВРЕМЕНИ» НЕ печатается, когда ничего не скрыто."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "long_term.json").write_text(json.dumps({
+        "notes": {"headache_today": {"value": ROT, "updated": day(40)}},
+    }, ensure_ascii=False), encoding="utf-8")
+    _off(home)
+    monkeypatch.setenv("JARVIS_STATE_DIR", str(home))
+
+    out = _run_report()
+    assert "СКРЫТО ПО ВРЕМЕНИ" not in out, (
+        "Отчёт утверждает, что факт скрыт, при выключенном выключателе")
+    assert "Было бы скрыто, если включить" in out
+
+
+def test_disabled_expiry_does_not_say_the_mechanism_is_waiting(tmp_path,
+                                                               monkeypatch):
+    """«Механизм видит и ждёт» — неправда, когда он вообще не работает."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "long_term.json").write_text(json.dumps({
+        "notes": {"headache_today": {"value": ROT, "updated": day(1)}},
+    }, ensure_ascii=False), encoding="utf-8")
+    _off(home)
+    monkeypatch.setenv("JARVIS_STATE_DIR", str(home))
+
+    out = _run_report()
+    assert "ждёт" not in out
+    assert "ВЫКЛЮЧЕН" in out
+
+
+def test_enabled_by_default_without_any_settings_file(tmp_path, monkeypatch):
+    """Нет settings.json — срок годности РАБОТАЕТ. Это значение по умолчанию.
+
+    Владелец искал settings.json и не нашёл: файла и не должно быть.
+    Отсутствие файла не должно читаться как «выключено».
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "long_term.json").write_text(json.dumps({
+        "notes": {"headache_today": {"value": ROT, "updated": day(40)}},
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setenv("JARVIS_STATE_DIR", str(home))
+    assert not (home / "settings.json").exists()
+
+    out = _run_report()
+    assert "ВЫКЛЮЧЕН" not in out
+    assert "СКРЫТО ПО ВРЕМЕНИ" in out
+
+
+def test_the_switch_actually_changes_the_prompt(tmp_path, monkeypatch):
+    """Выключатель меняет БЛОК ПРОМПТА, а не только текст отчёта.
+
+    Иначе он был бы косметикой: успокаивал бы, ничего не меняя.
+    """
+    from memory import memory_manager as mm
+    memory = {"notes": {"headache_today": {"value": ROT, "updated": day(40)}},
+              "identity": {"name": {"value": "Rustam", "updated": day(300)}}}
+
+    home = tmp_path / "on"
+    home.mkdir()
+    monkeypatch.setenv("JARVIS_STATE_DIR", str(home))
+    _, hidden_on = mm._visible_memory(memory)
+
+    off = tmp_path / "off"
+    off.mkdir()
+    _off(off)
+    monkeypatch.setenv("JARVIS_STATE_DIR", str(off))
+    # Кэша у настроек нет: loader._settings() читает файл на каждый
+    # вызов (проверено в исходнике), поэтому смены JARVIS_STATE_DIR
+    # достаточно и сбрасывать нечего.
+    _, hidden_off = mm._visible_memory(memory)
+
+    assert hidden_on == 1, "Включённый режим не скрыл просроченное"
+    assert hidden_off == 0, "Выключатель не выключает"

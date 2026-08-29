@@ -34,6 +34,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from core.feature_flags import memory_expiry_enabled     # noqa: E402
 from core.safe_json import state_path                    # noqa: E402
 from memory.memory_manager import (                      # noqa: E402
     _EXPIRY_FRESH_DAYS,
@@ -163,11 +164,35 @@ def main() -> int:
         for name in undated[:10]:
             print(f"      {name}")
 
-    if rotten:
+    # ВЫКЛЮЧАТЕЛЬ ЧИТАЕТСЯ ЗДЕСЬ, а не подразумевается включённым.
+    # Замерено на живых данных: при JARVIS_MEMORY_EXPIRY=false отчёт всё
+    # равно печатал раздел «СКРЫТО ПО ВРЕМЕНИ», хотя счётчик скрытых был
+    # 0 и факт спокойно уезжал в промпт. То есть отчёт показывал желаемое
+    # вместо действительного — сам дефект, от которого он должен спасать.
+    enabled = True
+    try:
+        enabled = memory_expiry_enabled()
+    except Exception:
+        pass
+
+    if not enabled:
+        print("\n" + "!" * 72)
+        print("СРОК ГОДНОСТИ ВЫКЛЮЧЕН: JARVIS_MEMORY_EXPIRY = false")
+        print("Ничего не скрывается, даже просроченное. Чтобы включить —")
+        print("уберите эту строку из settings.json или поставьте true.")
+        print("!" * 72)
+        if rotten:
+            print("Было бы скрыто, если включить "
+                  f"({len(rotten)}), но сейчас уезжает в промпт:")
+            for age, cat, key, value in sorted(rotten, reverse=True):
+                print(f"  [{age:>4} дн.] {cat}/{key}: {value}")
+    elif rotten:
         print("\n" + "-" * 72)
         print("СКРЫТО ПО ВРЕМЕНИ (на диске цело, recall_memory найдёт):")
         for age, cat, key, value in sorted(rotten, reverse=True):
             print(f"  [{age:>4} дн.] {cat}/{key}: {value}")
+    elif not enabled:
+        pass                    # уже сказано выше, повтор только запутает
     elif events and dated:
         print("\nПо времени пока ничего не скрыто — и это ОЖИДАЕМО:")
         print(f"самому старому событию {oldest} дн., порог "
