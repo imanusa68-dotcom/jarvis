@@ -241,6 +241,51 @@ SECURITY_POLICY: dict[str, ToolPolicy] = {
         reason="Search local memory mid-conversation (read-only)",
     ),
 
+    # -- THE HOUSE WRITING BY ITSELF (phase 1e) -------------------------------
+    #
+    # These two are NOT tools. The model never sees them (planner_visible is
+    # False) and they are absent from TOOL_DECLARATIONS on purpose. They are
+    # the reason the house gives the door when `_update_memory_async` decides,
+    # in the background and without being asked, to write something down.
+    #
+    # Why they had to exist at all: that background writer reached
+    # update_memory() and update_personality() directly, so the one place
+    # where a write can be refused (rule G-2) did not see it. The owner had
+    # asked for nothing, was told nothing, and no line appeared in the
+    # journal. `personality.json` is the worse half - it is HOW Jarvis speaks
+    # to the owner, so a quiet edit there changes Jarvis himself.
+    #
+    # Measured before the fix (live gate, 29.08.2026): both names returned
+    # `blocked: Unknown tool`. Calling the door first and registering later
+    # would have switched the background writer off in silence, with every
+    # test still green - the same trap as phase 1g.
+    #
+    # risk stays `low` on the owner's direct instruction (he refused to be
+    # asked for confirmation): anything higher means "ask the owner". This
+    # phase adds a TRACE and a single place to switch the behaviour off
+    # later - it forbids nothing today.
+    #
+    # planner_visible=False is load-bearing, not cosmetic. Showing these to
+    # the model would create a FOURTH way into memory while we are closing
+    # the third one.
+    #
+    # The ban on subagents lives in core/fences.py, not here: risk answers
+    # "how dangerous", the fence answers "who is asking".
+
+    "memory_self_write": ToolPolicy(
+        status="allowed",
+        planner_visible=False,
+        risk="low",
+        reason="The house writing a fact down on its own, unasked",
+    ),
+
+    "personality_self_write": ToolPolicy(
+        status="allowed",
+        planner_visible=False,
+        risk="low",
+        reason="The house adjusting its own manner of speaking, unasked",
+    ),
+
     "system_context": ToolPolicy(
         status="allowed",
         planner_visible=True,

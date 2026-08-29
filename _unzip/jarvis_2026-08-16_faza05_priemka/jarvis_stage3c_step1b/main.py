@@ -164,6 +164,70 @@ def _update_memory_async(user_text: str, jarvis_text: str) -> None:
     """
     global _last_memory_input
 
+    # ── ФАЗА 1Е: третий путь в память ходит через дверь ───────────────────
+    #
+    # ЧТО БЫЛО. Эта функция — единственное место, где дом дописывает что-то
+    # САМ, без просьбы владельца. Два вызова ниже (`update_memory` и
+    # `update_personality`) шли мимо `core/gate.py`, то есть мимо правила
+    # Г-2 «отказать можно ровно в одном месте». Следа в журнале не
+    # оставалось: на вопрос «почему ты стал так отвечать?» ответить было
+    # нечем, потому что правка личности не фиксировалась нигде.
+    #
+    # ПОЧЕМУ ЭТО ВАЖНЕЕ, ЧЕМ ЧАСТОТА. Замер живого разговора: 6 явных
+    # сохранений против 0 само-записей. Путь РЕДКИЙ (раньше я ошибочно
+    # называл его самым частым — утверждение отозвано). Но `personality.json`
+    # — это манера речи самого Джарвиса, и тихая правка здесь меняет ЕГО, а
+    # не сведения о владельце. Чинится из-за того, ЧТО пишет, не как часто.
+    #
+    # ЛОВУШКА, ПРОВЕРЕННАЯ ЖИВЫМ ЗАМЕРОМ ДО ПРАВКИ (29.08.2026):
+    #     memory_self_write       -> blocked  Unknown tool ...
+    #     personality_self_write  -> blocked  Unknown tool ...
+    # Дверь по правилу fail-closed блокирует незнакомое имя. Позови её
+    # отсюда раньше, чем имена появились в `core/security.py`, — авто-запись
+    # умерла бы МОЛЧА, а все сторожа остались бы зелёными. Поэтому порядок
+    # был: политика -> забор -> сторожа -> этот вызов.
+    #
+    # ЧЕГО ЗДЕСЬ НАМЕРЕННО НЕТ:
+    #   * ВЛАДЕЛЬЦА НЕ СПРАШИВАЮТ. risk=low -> policy auto -> вердикт `run`.
+    #     Прямое решение владельца от 28.08.2026: «нет, мне надоест мне
+    #     всегда подтверждать ему». Поднять риск = переспрашивать после
+    #     каждой реплики.
+    #   * МОДЕЛЬ ЭТОГО НЕ ВИДИТ. `planner_visible=False` в политике, и
+    #     имён нет в TOOL_DECLARATIONS. Иначе модель начнёт звать их сама и
+    #     получится ЧЕТВЁРТЫЙ путь в память вместо закрытия третьего.
+    #   * НИЧЕГО НЕ ЗАПРЕЩЕНО. Владелец проходит как раньше, поведение то
+    #     же. Появился след и одна точка, где это можно будет выключить.
+    #   * РОЛЬ НЕ ПЕРЕДАЁТСЯ. Замер: в фоновом потоке `agent_role=None`,
+    #     `origin=('owner','main')` — contextvars через границу потока не
+    #     переносится. Опираться на роль здесь нельзя, она всегда
+    #     «владелец». Запрет под-агенту живёт в `core/fences.py`
+    #     (MEMORY_TOOLS) и срабатывает там, где ctx передан явно.
+    #
+    # ЭТО ФОНОВЫЙ ПОТОК. Исключение отсюда либо съедается молча, либо
+    # всплывает в чужом месте — не годится ни то, ни другое. Поэтому
+    # «дверь сломалась -> не пишем и печатаем», а не «падаем».
+    #
+    # ОТКАТ: удалить `_may_write_by_itself` и две проверки ниже.
+    def _may_write_by_itself(what: str, fields) -> bool:
+        try:
+            from core import gate as _gate
+            # В журнал уходят ИМЕНА полей, не значения (И45): авто-запись
+            # может подхватить из разговора что угодно.
+            verdict = _gate.dispatch(
+                what,
+                {str(f): None for f in (fields or ())},
+                mode="interactive",
+            )
+        except Exception as _gate_err:
+            print(f"[Memory] ⚠️ gate error — {what} refused (fail-closed): "
+                  f"{_gate_err}")
+            return False
+        if not getattr(verdict, "allowed", False):
+            print(f"[Memory] 🚫 gate refused {what}: "
+                  f"{getattr(verdict, 'reason', '') or 'no reason given'}")
+            return False
+        return True
+
     user_text   = (user_text   or "").strip()
     jarvis_text = (jarvis_text or "").strip()
 
@@ -200,6 +264,9 @@ def _update_memory_async(user_text: str, jarvis_text: str) -> None:
         if should_extract_memory(user_text, jarvis_text, api_key):
             data = extract_memory(user_text, jarvis_text, api_key)
             if data:
+                if not _may_write_by_itself("memory_self_write",
+                                            data.keys()):
+                    return
                 update_memory(data)
                 print(f"[Memory] ✅ {list(data.keys())}")
     except Exception as e:
@@ -224,6 +291,11 @@ def _update_memory_async(user_text: str, jarvis_text: str) -> None:
         if should_analyze_personality(user_text, jarvis_text, api_key):
             p_data = analyze_personality(user_text, jarvis_text, api_key)
             if p_data:
+                # Отдельный вердикт, а не общий с памятью: по журналу должно
+                # быть видно, ЧТО именно записали — факты или манеру речи.
+                if not _may_write_by_itself("personality_self_write",
+                                            p_data.keys()):
+                    return
                 update_personality(p_data)
     except Exception as e:
         err = str(e)
@@ -1312,12 +1384,16 @@ class JarvisLive:
         # 4. НЕ ТРОНУТ silent-контракт: ответ ниже по-прежнему `silent: True`,
         #    Джарвис не начнёт вслух отчитываться о каждой записи.
         #
-        # ЧЕГО ЭТА ПРАВКА НЕ ЛЕЧИТ — сказано честно. У памяти есть второй
-        # писатель: `_update_memory_async` (строка ~153, запуск ~1770) зовёт
-        # `update_memory()` напрямую из фонового потока, минуя `_execute_tool`.
-        # Он не инструмент (имени в политике нет), и его записи в журнал двери
-        # не попадут. Это отдельная задача: там нет «кто просил» — просил сам
-        # разговор.
+        # ЗАКРЫТО В ФАЗЕ 1Е. Здесь была честная записка о втором писателе:
+        # `_update_memory_async` зовёт `update_memory()` напрямую из фонового
+        # потока, минуя `_execute_tool`, и в журнал двери не попадает. Долг
+        # снят — та функция теперь спрашивает дверь под своими поводами
+        # `memory_self_write` и `personality_self_write`. Номер строки в
+        # прежней записке («запуск ~1770») к тому же успел устареть, что само
+        # по себе довод не ссылаться на строки.
+        #
+        # Заодно там нашлось хуже: тот же поток писал `update_personality()` —
+        # манеру речи самого Джарвиса — и это не фиксировалось нигде.
         #
         # ОТКАТ: удалить этот блок целиком. Ничего другого не затронуто.
         # ФАЗА 1Г: через дверь идут ВСЕ ТРИ инструмента памяти, а не один.
