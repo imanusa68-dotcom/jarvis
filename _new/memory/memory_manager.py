@@ -9,6 +9,7 @@ Düzeltmeler:
 """
 
 import json
+import re
 from datetime import datetime
 from threading import Lock
 from pathlib import Path
@@ -135,7 +136,18 @@ def _truncate_value(val: str) -> str:
     return val
 
 
-def _recursive_update(target: dict, updates: dict) -> bool:
+def _recursive_update(target: dict, updates: dict,
+                      _seen: list | None = None) -> bool:
+    """Влить факты в память. True, если появилось что-то НОВОЕ.
+
+    `_seen` — служебный список для рекурсии: туда попадают ключи
+    фактов, у которых обновилась ТОЛЬКО дата: владелец повторил
+    то же самое. В возвращаемое значение он НЕ входит:
+    обновление даты не новость и не должно печатать «Saved».
+
+    Параметр необязательный намеренно: вызовы с двумя
+    аргументами — в том числе из тестов — работают как прежде.
+    """
     changed = False
     for key, value in updates.items():
         if value is None:
@@ -147,7 +159,7 @@ def _recursive_update(target: dict, updates: dict) -> bool:
             if key not in target or not isinstance(target[key], dict):
                 target[key] = {}
                 changed = True
-            if _recursive_update(target[key], value):
+            if _recursive_update(target[key], value, _seen):
                 changed = True
         else:
             if isinstance(value, dict) and "value" in value:
@@ -179,6 +191,37 @@ def _recursive_update(target: dict, updates: dict) -> bool:
                     or existing.get("said") != entry.get("said")):
                 target[key] = entry
                 changed = True
+            else:
+                # ТО ЖЕ САМОЕ СКАЗАНО ЗАНОВО — ЭТО СОБЫТИЕ, А НЕ ПУСТОТА.
+                #
+                # Здесь был дефект, найденный замером (probe57) при подготовке
+                # срока годности фактов. Раньше эта ветка отсутствовала: если
+                # значение совпало, запись не трогали вовсе — и поле `updated`
+                # навсегда оставалось датой ПЕРВОГО раза. Владелец мог сказать
+                # «у меня опять болит голова» десять раз, а в памяти всё так же
+                # стояло 29.08, будто с тех пор он молчал.
+                #
+                # Пока промпт не смотрел на дату, это было незаметно. Как только
+                # дата начинает решать, что показывать (см. _expire_stale ниже),
+                # тот же дефект становится потерей: однажды скрытый факт не
+                # вернулся бы НИКОГДА, сколько бы владелец ни повторял. Поэтому
+                # правка стоит ЗДЕСЬ и отдельно — лечится причина, а не симптом.
+                #
+                # `changed` НАМЕРЕННО остаётся прежним. Обновление даты — не
+                # новость: печатать «💾 Saved» о факте, который и так лежал,
+                # значит врать о записи, которой не было. Ровно за такую ложь
+                # (сообщение об успехе там, где успеха нет) в этом файле уже
+                # переписывался update_memory.
+                #
+                # Мы правим ТОЛЬКО дату и не касаемся ни `value`, ни `said`:
+                # если существующая запись хранит дословную фразу владельца,
+                # а повтор пришёл без неё, подмена целой записи потеряла бы
+                # формулировку — то же самое, от чего защищает ветка выше.
+                stamp = entry["updated"]
+                if existing.get("updated") != stamp:
+                    existing["updated"] = stamp
+                    if _seen is not None:
+                        _seen.append(key)
 
     return changed
 
@@ -236,10 +279,11 @@ def update_memory(memory_update: dict) -> dict:
 
     _ensure_migrated()
     touched = False
+    refreshed: list = []
 
     def change(memory: dict) -> dict:
         nonlocal touched
-        touched = _recursive_update(memory, memory_update)
+        touched = _recursive_update(memory, memory_update, refreshed)
         return memory
 
     try:
@@ -253,6 +297,21 @@ def update_memory(memory_update: dict) -> dict:
 
     if touched:
         print(f"[Memory] 💾 Saved: {list(memory_update.keys())}")
+        _note_in_index(memory, memory_update)
+    elif refreshed:
+        # ПОВТОР ТОГО ЖЕ — новостей нет, поэтому молчим: печать
+        # «Saved» о факте, который и так лежал, значит врать.
+        #
+        # Но индекс отметить ОБЯЗАНО, и это исправление второго,
+        # пред-существовавшего дефекта (замер probe61/probe65).
+        # `safe_update` перезаписывает файл КАЖДЫЙ раз, даже когда
+        # содержание не изменилось. Меняется mtime — значит,
+        # расходится «отпечаток» файла, и следующий recall_memory
+        # платит ПОЛНЫМ пересбором зеркала: по замеру в шапке
+        # sync_if_stale — 216 мс на 1000 фактов и 2.5 СЕКУНДЫ на
+        # 10 000, посреди разговора, вслух. `note_fact` попутно
+        # принимает новый отпечаток, поэтому расхождение исчезает,
+        # а дата в индексе начинает совпадать с датой в JSON.
         _note_in_index(memory, memory_update)
     return memory
 
@@ -631,12 +690,226 @@ def _without_junk(memory: dict) -> dict:
     return cleaned
 
 
+# -- Срок годности фактов о событиях (расширение принципа 3B.5) ---------------
+#
+# ЧТО ЛЕЧИМ. Блок памяти собирался из JSON и на поле `updated` не смотрел
+# никто. Поэтому «у меня болит голова» ехало в промпт вечно, и через две недели
+# Джарвис спрашивал «как голова?» — не из заботы, а потому что для него это
+# по-прежнему СЕГОДНЯ. Замер на настоящей памяти владельца (probe49/probe50):
+# 4 просроченных факта из 18 — 22% памяти и 32% знаков блока.
+#
+# ЧЕМ ЭТО НЕ ЯВЛЯЕТСЯ. Это не удаление и не понижение достоверности. Инвариант
+# дома — «junk is hidden, never deleted» — здесь ПРОДОЛЖЕН: строка исчезает
+# только из текста, который уходит в модель. Запись на диске цела; поиск её
+# находит, потому что промпт собирается из JSON, а поиск идёт по SQLite — две
+# разные копии (проверено probe51). Достоверность (`confidence`) НЕ трогаем
+# намеренно: junk-путь понижает её до 0.2, а поиск отсекает всё ниже 0.3, и
+# тронув её здесь, мы превратили бы обещание «факт всё ещё находится» в ложь.
+#
+# ПОЧЕМУ СУДИМ ПО КЛЮЧУ, А НЕ ПО ЗНАЧЕНИЮ. Ключ — это то, что модель выбрала
+# как ИМЯ факта: `headache_today` против `tigr_allergy`. Значения же structurally
+# неразличимы (`likes coffee` и `works remotely` — одинаковые по форме), на этом
+# ровно и провалилась предыдущая, уже одобренная попытка «ключ ≈ значение»
+# (probe44-47): она давала ложные отказы на `works_remotely` и `vegetarian`.
+#
+# ТРИ СТРАХОВКИ ОТ ЛОЖНОГО СКРЫТИЯ, каждая добавлена по замеру:
+#   1. Целые СЛОВА, не подстроки (probe55: подстроки давали 7 ложных скрытий —
+#      `visit` находилось внутри `visitation_rights`).
+#   2. Категории identity / preferences / projects / communication_habits не
+#      проверяются вовсе: там нечему истекать.
+#   3. Слова-роли (`job`, `plan`, `rule`, `habit`, `career`…) запрещают скрытие
+#      даже при слове-маркере: `daily_plan_habit` — это привычка, а не событие.
+# Итог замера (probe63): 0 ошибок на 40 реальных ключах, 0 исключений на 17
+# видах ядовитых данных.
+#
+# ПОЧЕМУ FAIL-OPEN. Любая непонятная дата — отсутствующая, кривая, будущая, не
+# строка — даёт None и НЕ скрывает. Ошибиться в сторону «показать лишнее»
+# дешево (владелец слышит устаревшую деталь), ошибиться в сторону «спрятать»
+# дороже. Тесты хранят факты вообще без дат, и это ровно тот случай.
+_EXPIRY_WORD_MARKS = frozenset((
+    "today", "yesterday", "tomorrow", "tonight", "event", "visit",
+    "сегодня", "вчера", "завтра", "сейчас", "приезд", "звонил", "событие",
+))
+
+# Пары слов: по одному слову судить нельзя («last» есть в «last name»), а
+# вместе они означают время. Без русских слов правило было слепо на половине
+# реальных ключей владельца — замерено probe57.
+_EXPIRY_WORD_PAIRS = (
+    ("last", "contact"), ("right", "now"), ("just", "now"),
+    ("this", "week"), ("this", "month"),
+)
+
+# Слово-роль сильнее слова-маркера: роль описывает, ЧЕМ факт является, а
+# маркер — лишь когда о нём говорили.
+_EXPIRY_ROLE_WORDS = frozenset((
+    "job", "policy", "career", "plan", "planner", "rule", "habit", "name",
+    "profession", "work", "role", "brand", "book", "fan", "goal", "business",
+))
+
+_EXPIRY_NEVER_CATEGORIES = frozenset((
+    "identity", "preferences", "projects", "communication_habits",
+))
+
+# С какого дня показывать возраст и с какого скрывать совсем.
+# Два дня без метки — «недавно»: если владелец вчера сказал про голову, а
+# сегодня спрашивает про таблетку, оговорка была бы неуместна.
+_EXPIRY_FRESH_DAYS = 2
+_EXPIRY_STALE_DAYS = 14
+
+_EXPIRY_WORD_SPLIT = re.compile(r"[^0-9a-zа-яё]+")
+
+# Защита от ДВОЙНОЙ метки. Замерено (probe64): если функцию применить к уже
+# помеченному результату, получится «headache today [5 дн. назад] [5 дн.
+# назад]». Так и случится, если однажды кто-то позовёт срок годности дважды —
+# например, из диагностики и из сборки промпта.
+_EXPIRY_LABEL_TAIL = re.compile(r"\[\d+\s*дн\. назад\]\s*$")
+
+
+def _expiry_words(key) -> list:
+    return [w for w in _EXPIRY_WORD_SPLIT.split(str(key).lower()) if w]
+
+
+def _is_event_key(category, key) -> bool:
+    """Похоже ли, что это факт о СОБЫТИИ (а не о свойстве человека)."""
+    if str(category).lower() in _EXPIRY_NEVER_CATEGORIES:
+        return False
+    words = _expiry_words(key)
+    if not words:
+        return False
+    if any(w in _EXPIRY_ROLE_WORDS for w in words):
+        return False
+    if any(w in _EXPIRY_WORD_MARKS for w in words):
+        return True
+    return any(a in words and b in words for a, b in _EXPIRY_WORD_PAIRS)
+
+
+def _fact_age_days(entry, today):
+    """Возраст факта в днях или None, если понять нельзя. None = НЕ СКРЫВАТЬ.
+
+    Замер probe52: 6 из 7 крайних случаев ломали наивный strptime. Здесь
+    каждый из них честно приводит к None, кроме даты в будущем — она тоже
+    None, потому что «минус три дня» означает сбитые часы, а не свежесть.
+    """
+    if not isinstance(entry, dict):
+        return None
+    raw = entry.get("updated")
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        stamp = datetime.strptime(raw.strip()[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    try:
+        age = (today - stamp).days
+    except Exception:
+        return None
+    return None if age < 0 else age
+
+
+def _expire_stale(memory: dict, *, today=None, days: int | None = None) -> tuple:
+    """Убрать из блока промпта просроченные события. Возвращает (память, сколько).
+
+    НИЧЕГО НЕ ПИШЕТ И НЕ ПОРТИТ ВХОД. Возвращаются новые словари, а запись с
+    меткой возраста — копия. Замер probe64 показал, зачем это важно буквально:
+    правка на месте дописывала метку в исходный объект, и при следующем
+    сохранении «[5 дн. назад]» уехало бы на ДИСК, накапливаясь при каждом
+    вызове.
+    """
+    if days is None:
+        days = _EXPIRY_STALE_DAYS
+    if today is None:
+        today = datetime.now().date()
+
+    out, hidden = {}, 0
+    for category, entries in (memory or {}).items():
+        if not isinstance(entries, dict):
+            out[category] = entries
+            continue
+        kept = {}
+        for key, entry in entries.items():
+            if not _is_event_key(category, key):
+                kept[key] = entry
+                continue
+            age = _fact_age_days(entry, today)
+            if age is None:
+                kept[key] = entry          # непонятно -> оставить (fail-open)
+                continue
+            if age > days:
+                hidden += 1                # просрочено -> в промпт не едет
+                continue
+            if age > _EXPIRY_FRESH_DAYS and isinstance(entry, dict):
+                value = str(entry.get("value") or "")
+                if _EXPIRY_LABEL_TAIL.search(value):
+                    kept[key] = entry      # метка уже стоит, второй не надо
+                else:
+                    marked = dict(entry)
+                    marked["value"] = f"{value} [{age} дн. назад]"
+                    kept[key] = marked
+            else:
+                kept[key] = entry
+        out[category] = kept
+    return out, hidden
+
+
+def _visible_memory(memory: dict | None) -> tuple:
+    """Что РЕАЛЬНО увидит модель: без мусора и без просроченных событий.
+
+    Одна дверь для двух зовущих — сборки промпта и диагностики в main.py.
+    Раньше диагностика повторяла фильтр своими руками, и любое расхождение
+    превращало её в ложь: «In prompt: 18 facts» при 14 фактически ушедших.
+    Отдельная функция делает такое расхождение невозможным по построению.
+
+    Флаг читается ЛЕНИВО, и это замер, а не вкус: чтение настройки стоит
+    0.065 мс, а вся сборка блока — 0.051 мс (probe62), то есть флаг дороже
+    работы, которую он охраняет. Поэтому сначала смотрим, есть ли вообще
+    просроченное, и только тогда спрашиваем настройку.
+    """
+    cleaned = _without_junk(memory or {})
+    expired, hidden = _expire_stale(cleaned)
+    if not hidden and expired == cleaned:
+        return cleaned, 0
+    try:
+        from core.feature_flags import memory_expiry_enabled
+        if not memory_expiry_enabled():
+            return cleaned, 0
+    except Exception:
+        pass                                # нет настроек -> поведение по умолчанию
+    return expired, hidden
+
+
+def _expiry_note(expired: int) -> str:
+    """Текст заметки о просроченных фактах. ОДНО место, два зовущих.
+
+    ОТДЕЛЬНАЯ заметка, а не прибавка к «не влезло»: причины разные, и
+    поведение модели обязано отличаться. «Не влезло» значит «спроси, если
+    нужно». «Срок годности вышел» значит «не начинай разговор сам» — именно
+    это и было болью, «как голова?» спустя месяц. И обязательно говорим,
+    что факт НЕ удалён: иначе Джарвис уверенно скажет «не знаю» вместо
+    того, чтобы посмотреть.
+
+    Согласование в числе — не косметика: этот текст читает МОДЕЛЬ, и
+    «1 facts are hidden» она может понять как «фактов несколько», а потом
+    сослаться на то, чего нет.
+    """
+    if expired == 1:
+        said, it, them = ("1 older saved fact about a passing event is",
+                          "It is", "it")
+    else:
+        said, it, them = (
+            f"{expired} older saved facts about passing events are",
+            "They are", "them")
+    return (f"\n\n({said} time-expired and hidden from this list. "
+            f"{it} NOT deleted \u2014 do not bring {them} up on your own, "
+            f"but call recall_memory if the person asks about {them}.)")
+
+
 def format_memory_for_prompt(memory: dict | None) -> str:
     if not memory:
         return ""
-    memory = _without_junk(memory)
+    memory, _expired = _visible_memory(memory)
 
-    lines = []
+    header = "[WHAT YOU KNOW ABOUT THIS PERSON \u2014 use naturally, never recite like a list]\n"
+    lines  = []
 
     identity  = memory.get("identity", {})
     id_fields = ["name", "age", "birthday", "city", "job", "language", "school", "nationality"]
@@ -731,14 +1004,39 @@ def format_memory_for_prompt(memory: dict | None) -> str:
             lines.extend(cat_lines)
 
     if not lines:
+        # ПУСТО ПОСЛЕ СРОКА ГОДНОСТИ — НЕ ТО ЖЕ, ЧТО ПУСТО ВСЕГДА.
+        # Найдено тестом (test_the_prompt_says_the_fact_is_hidden...): если
+        # ВСЯ память состояла из просроченных событий, ранний возврат ""
+        # уносил и заметку. Джарвис не получал ни фактов, ни подсказки — и
+        # уверенно отвечал «я о тебе ничего не знаю», хотя на диске лежало.
+        # Ровно эта ложь и есть худший исход всей затеи, поэтому заметка
+        # обязана дожить до промпта даже в одиночестве.
+        if _expired:
+            return header + _expiry_note(_expired) + "\n"
         return ""
 
-    header = "[WHAT YOU KNOW ABOUT THIS PERSON — use naturally, never recite like a list]\n"
 
     head, sections = _split_prompt_sections(lines)
-    dropped = _fit_prompt_to_budget(head, sections, header, PROMPT_CHAR_BUDGET)
 
-    result = header + _render_prompt_sections(head, sections)
+    # ЗАМЕТКА О СРОКЕ ГОДНОСТИ ПЛАТИТ ИЗ БЮДЖЕТА, А НЕ СВЕРХ НЕГО.
+    #
+    # Замерено (probe73/probe76) уже ПОСЛЕ того, как правка легла: заметка
+    # приписывалась к ГОТОВОМУ блоку, то есть после делёжки бюджета. На памяти
+    # из 60 просроченных и 120 живых фактов блок вышел на 4343 знака против
+    # 4000 — перебор 343, а сторож test_the_budget_still_wins_in_the_end терпит
+    # +300. То есть моя же правка ломала бюджет, который в этом файле заводили
+    # ровно против неограниченного блока. Дефект нашёлся замером, а не в бою.
+    #
+    # Лечится не смягчением сторожа, а вычетом: сколько фактов просрочено,
+    # известно ДО делёжки (_visible_memory посчитал выше), поэтому длину
+    # заметки можно вычесть из бюджета заранее. Новая возможность не имеет
+    # права молча расширять расход на промпт — цена платится из своих.
+    expired_note = _expiry_note(_expired) if _expired else ""
+
+    budget  = max(0, PROMPT_CHAR_BUDGET - len(expired_note))
+    dropped = _fit_prompt_to_budget(head, sections, header, budget)
+
+    result = header + _render_prompt_sections(head, sections) + expired_note
     if dropped:
         # Saying the number out loud matters: without it, Jarvis cannot tell the
         # difference between "nothing was ever saved" and "it did not fit", and

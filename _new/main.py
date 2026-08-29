@@ -1406,9 +1406,16 @@ class JarvisLive:
             # is filtered out of the block, so counting the raw file would
             # report facts that are not there. A diagnostic that disagrees
             # with reality is worse than no diagnostic.
+            #
+            # С этой правки из блока уходит не только junk, но и
+            # просроченные факты о событиях, и счётчик по _without_junk
+            # стал бы врать ровно на скрытое. _visible_memory — ЕДИНАЯ дверь:
+            # и сборка промпта, и эта диагностика спрашивают одну функцию,
+            # поэтому разойтись они не могут по устройству, а не по договорённости.
+            _expired_n = 0
             try:
-                from memory.memory_manager import _without_junk
-                _visible = _without_junk(memory or {})
+                from memory.memory_manager import _visible_memory
+                _visible, _expired_n = _visible_memory(memory or {})
             except Exception:
                 _visible = memory or {}
             _facts = {
@@ -1423,6 +1430,18 @@ class JarvisLive:
                     f"[Memory] \U0001f9e0 In prompt: {_total} facts "
                     f"({_desc}), {len(mem_str)} chars"
                 )
+                if _expired_n:
+                    # Печатается ТОЛЬКО когда есть что печатать: пустая
+                    # строка каждый запуск превратила бы диагностику в шум,
+                    # а шум перестают читать. Видна именно работа срока
+                    # годности: без этой строки скрытие нельзя отличить
+                    # от потери факта — а это ровно тот страх, который вызывает
+                    # любое автоматическое сокращение памяти.
+                    print(
+                        f"[Memory] \u23f3 {_expired_n} time-expired event "
+                        "fact(s) hidden from the prompt \u2014 still on disk, "
+                        "recall_memory finds them."
+                    )
                 # .strip() здесь не украшение, а исправление замеренного
                 # дефекта. Владелец запустил ровно то, что я просил:
                 #     set JARVIS_DEBUG_PROMPT=1 && python main.py
