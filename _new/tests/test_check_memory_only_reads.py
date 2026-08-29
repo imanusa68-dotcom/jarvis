@@ -1,6 +1,6 @@
-# tests/test_memory_report_only_reads.py
+# tests/test_check_memory_only_reads.py
 """
-СТОРОЖ ПОКАЗОМЕТРА ПАМЯТИ (memory_report.py).
+СТОРОЖ ПОКАЗОМЕТРА ПАМЯТИ (check_memory.py).
 
 Этот отчёт владелец будет запускать на СВОЕЙ живой памяти, чтобы убедиться,
 что срок годности работает. Значит у него две обязанности, и обе надо
@@ -83,7 +83,7 @@ def _run_report() -> str:
     'NoneType' object has no attribute 'set_fixture'. Значит перехват вывода
     здесь — не роскошь, а единственный доступный способ.
     """
-    mod = importlib.import_module("memory_report")
+    mod = importlib.import_module("check_memory")
     importlib.reload(mod)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -219,7 +219,7 @@ def test_report_says_plainly_when_nothing_is_old_enough(tmp_path, monkeypatch):
 
 def test_report_borrows_the_thresholds_it_does_not_invent_them():
     """Пороги взяты из модуля. Вписанные числа тихо разойдутся с правдой."""
-    mod = importlib.import_module("memory_report")
+    mod = importlib.import_module("check_memory")
     importlib.reload(mod)
     from memory import memory_manager as mm
     assert mod._EXPIRY_STALE_DAYS is mm._EXPIRY_STALE_DAYS
@@ -228,7 +228,7 @@ def test_report_borrows_the_thresholds_it_does_not_invent_them():
 
 def test_report_source_has_no_hand_written_threshold():
     """В исходнике нет сравнения возраста с числом-константой."""
-    src = (ROOT / "memory_report.py").read_text(encoding="utf-8")
+    src = (ROOT / "check_memory.py").read_text(encoding="utf-8")
     assert "age > 14" not in src
     assert "age > 2" not in src
 
@@ -239,7 +239,7 @@ def test_report_does_not_go_through_load_memory():
     Соблазн «просто позвать load_memory» вернётся при первой правке —
     поэтому запрет закреплён здесь, а не только в комментарии.
     """
-    src = (ROOT / "memory_report.py").read_text(encoding="utf-8")
+    src = (ROOT / "check_memory.py").read_text(encoding="utf-8")
     # Ищем ВЫЗОВ, а не слово: в докстринге «не через load_memory» стоит
     # ровно затем, чтобы объяснить запрет, и запрет на слово запрещал бы
     # собственное объяснение. Мой первый заход именно на этом и покраснел.
@@ -250,13 +250,13 @@ def test_report_does_not_go_through_load_memory():
 
 def test_report_uses_the_single_door():
     """Считает через `_visible_memory`, а не через свои правила."""
-    src = (ROOT / "memory_report.py").read_text(encoding="utf-8")
+    src = (ROOT / "check_memory.py").read_text(encoding="utf-8")
     assert "_visible_memory" in src
 
 
 def test_report_never_writes_by_source_inspection():
     """В исходнике нет ни записи, ни изменения настроек."""
-    src = (ROOT / "memory_report.py").read_text(encoding="utf-8")
+    src = (ROOT / "check_memory.py").read_text(encoding="utf-8")
     for forbidden in ("write_text(", "json.dump(", "set_setting",
                       "save_memory", "update_memory", "note_fact",
                       "upsert_fact", "os.remove", "shutil."):
@@ -269,7 +269,7 @@ def test_report_never_writes_by_source_inspection():
 # ── 4. Отчёт запускается как программа ────────────────────────────
 
 def test_report_runs_as_a_script(tmp_path, monkeypatch):
-    """`python memory_report.py` работает — именно так его и позовут."""
+    """`python check_memory.py` работает — именно так его и позовут."""
     home = tmp_path / "home"
     home.mkdir()
     _write_memory(home)
@@ -277,6 +277,6 @@ def test_report_runs_as_a_script(tmp_path, monkeypatch):
 
     before = _fingerprint(home)
     with pytest.raises(SystemExit) as exc:
-        runpy.run_path(str(ROOT / "memory_report.py"), run_name="__main__")
+        runpy.run_path(str(ROOT / "check_memory.py"), run_name="__main__")
     assert exc.value.code == 0
     assert _fingerprint(home) == before
