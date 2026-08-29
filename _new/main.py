@@ -689,7 +689,29 @@ TOOL_DECLARATIONS = [
             "('open notepad'), questions, reactions, weather, reminders, or searches "
             "when no property hides inside them. "
             "Those belong to this conversation and must die with it. "
-            "Do NOT announce that you are saving — just call it silently. "
+            # ШАГ 2′, 29.08.2026. ВЛАДЕЛЕЦ УСЛЫШАЛ ДЕЛОПРОИЗВОДИТЕЛЯ, а не
+            # Джарвиса: «Отмечено, сэр. У вас есть друг по имени Лёха»,
+            # «Обновляю информацию: вашего кота зовут Лев». Разобрал по живому
+            # журналу (probe34): запрет ниже говорил только «не объявляй
+            # ДЕЙСТВИЕ», и модель его СОБЛЮДАЛА — слова «сохраняю» нет ни в
+            # одной реплике. Но она пересказывала РЕЗУЛЬТАТ, а на пересказ
+            # запрета не было нигде: он есть только для блока памяти
+            # («never recite like a list»), для свежей записи — не было.
+            # Мало запретить: модели надо дать, что говорить ВМЕСТО отчёта,
+            # иначе пустоту снова займёт расписка. Отсюда вторая половина.
+            "Do NOT announce that you are saving, and do NOT read the saved "
+            "fact back. Saving is bookkeeping, and bookkeeping is not "
+            "conversation: 'Noted, sir, you have a cat' and 'Updating: your "
+            "cat is Lev' are filing receipts, not replies — they tell the user "
+            "what they just told you. "
+            "They said something about their LIFE, so answer THAT. 'The cat is "
+            "on my keyboard again' is about a cat walking on a keyboard: react "
+            "to the cat. 'Went fishing with Lyokha' is about a day off, not "
+            "about a friend record being created. Reply like someone who just "
+            "heard it, and file it in the background where they never see it. "
+            "If a remark deserves no reply at all, say nothing and just save. "
+            "A correction ('no, his name is Tigr') needs no receipt either — "
+            "least of all a second one. "
             # Владелец 28.08.2026 услышал ответ ДВАЖДЫ подряд («меренговый
             # торт»): модель озвучила фразу, вызвала save_memory и после
             # ответа инструмента озвучила ТО ЖЕ ещё раз. Инструмент при этом
@@ -710,6 +732,28 @@ TOOL_DECLARATIONS = [
             # живой строки, и прежнее значение исчезает без следа. «Mercedes»
             # после записи «BMW» в базе не остаётся ничем.
             # Поэтому текст говорит модели правду: замена — необратима.
+            # ШАГ 2′, 29.08.2026. Написано ПО ЗАМЕРУ, против собственного плана.
+            # План предлагал искать кандидатов через search_facts перед записью.
+            # Замерил (probe27-29): на замене — том самом случае, ради которого
+            # это и затевалось — поиск СЛЕПОЙ. «Химки» и «BMW» не имеют ни одного
+            # общего слова со «Moscow»/«Mercedes-Benz» в индексе, поиск вернул
+            # ПУСТО, и verbatim не спасает (он тоже про старое значение).
+            # Зато замерил другое (probe30-33): блок памяти уже печатает
+            # «Favorite Cars: Mercedes-Benz cars», и ключ восстанавливается из
+            # подписи однозначно — 23 из 23 ключей, включая buy_rtx_5070 и «x».
+            # Сведения у модели УЖЕ ЕСТЬ и стоят 0 знаков. Значит нужен текст,
+            # а не поиск. Граница честная: выше ~85 фактов часть подписей
+            # выпадает из блока по бюджету, и тогда это правило слепнет тоже.
+            "BEFORE choosing a key, look at the memory block in your "
+            "instructions: each line there IS a saved key, spelled out — "
+            "'Favorite Cars: ...' is the key favorite_cars, 'Cat Name: ...' is "
+            "cat_name. If the property is already on that list, reuse THAT key "
+            "instead of inventing a synonym. "
+            "And make the key mean what it holds: naming a key cat_name and "
+            "storing 'has a cat' promises a name that is not there, so the next "
+            "session believes the cat has been named. If you only know the "
+            "animal exists, the key is has_cat; cat_name is for when you know "
+            "the name. "
             "ONE PROPERTY, ONE KEY. Reusing a key you already saved REPLACES "
             "the old value and the old value is GONE — there is no history to "
             "restore it from. So reuse a key only when it is the SAME property "
