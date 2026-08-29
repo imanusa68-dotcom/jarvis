@@ -1,0 +1,49 @@
+# --- Секреты (никогда не коммитить) ---
+config/api_keys.json
+config/secrets.json
+# Старое место настроек. С фазы 0 шага 2 они живут в ~/.jarvis/settings.json;
+# этот файл остался только как источник разового переноса и в архив не идёт.
+config/settings.json
+config/settings.json.imported
+.env
+.env.*
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+
+# --- Runtime-состояние Jarvis (пишется кодом в дерево) ---
+memory/api_usage.json
+memory/long_term.json
+memory/reminders.json
+reminders.json
+*.log
+
+# --- Локальные настройки инструментов ---
+.claude/settings.local.json
+
+# --- Песочница/артефакты прогонов Jarvis (пересоздаются при golden-прогонах) ---
+JV/
+documents/
+information/
+Мои сочинения
+desktop/NewFolder
+
+# --- ОС ---
+Thumbs.db
+.DS_Store
+
+# Stage 1 gate audit log (local runtime, never commit)
+logs/
+
+# --- Stage 2 store (local SQLite state, never commit) ---
+*.db
+*.db-wal
+*.db-shm
+.jarvis/

@@ -1,0 +1,118 @@
+# config/languages.yaml
+# MARK XXXVI — таблицы для определения языка без сети и без модели.
+#
+# Зачем файл существует:
+#   Письменность (кириллица, иероглифы, вязь) видна по самим буквам — её узнаёт
+#   код без всяких таблиц. А вот все европейские языки пользуются одной и той же
+#   латиницей, и различить их можно только по частым словам и своеобразным
+#   буквам. Раньше этот вопрос уходил по сети к модели; теперь ответ здесь.
+#
+# Новый язык добавляется ПРАВКОЙ ЭТОГО ФАЙЛА и ни одной строчки в core/.
+# Код языка обязан существовать в таблице локалей core/search_locale.py,
+# иначе поиск получит английскую локаль молча (сторож это проверяет).
+#
+# Как сравниваются слова:
+#   С текста и со слов из этого файла снимаются все значки над буквами,
+#   поэтому владелец может писать "cok guzel" вместо "çok güzel" — совпадёт.
+#   Записывать слово дважды (со значками и без) НЕ НУЖНО.
+#
+# Все слова в кавычках нарочно: без них YAML превратит испанское no
+# в логическое «нет», а итальянское "on" — в «включено».
+
+version: 1
+
+# Что отвечать, когда узнать не удалось.
+# Решение владельца от 7 августа 2026: владелец говорит по-русски, значит
+# непонятный ввод считается русским, а не английским.
+fallback: "ru"
+
+# Единственное исключение — ради поиска.
+# Если язык не узнан, но в тексте одна латиница ("RTX 5060 review"), отвечаем
+# английским: этот ответ уходит в локаль поиска, а русская локаль на английском
+# запросе вернёт мусор. Кириллица, цифры и знаки латиницей не считаются —
+# они получают русский из fallback выше.
+fallback_latin: "en"
+
+thresholds:
+  # Какая доля букв одной письменности считается перевесом.
+  # 0.15 — ровно то число, что работало до сегодня. Не менять без замера.
+  script_share: 0.15
+  # Сколько украинских букв отделяют украинский от русского.
+  ukrainian_share: 0.05
+  # Сколько узнанных слов нужно, чтобы поверить словам.
+  # Два, а не одно: единственное случайное совпадение (нем. war = англ. war)
+  # не должно уводить весь ответ в чужой язык.
+  word_min_hits: 2
+  # Сколько первых знаков текста смотреть. Длиннее — медленнее без толку.
+  sample_chars: 500
+
+# Языки на латинице. Порядок значения не имеет.
+# words   — частые короткие слова (союзы, местоимения, глаголы-связки).
+# letters — буквы, которые почти не встречаются в других языках списка.
+#           Заглавные указаны отдельно там, где они себя ведут особенно
+#           (турецкая İ при понижении регистра распадается на два знака).
+latin:
+
+  en:
+    words: ["the", "and", "is", "are", "was", "were", "you", "your", "this", "that",
+            "with", "for", "from", "what", "when", "where", "how", "why", "not",
+            "have", "has", "will", "would", "can", "could", "should", "they", "them",
+            "but", "all", "about", "there", "their", "please", "thanks", "hello",
+            "does", "did", "been", "more", "than", "then", "some", "into", "which"]
+    letters: ""
+
+  de:
+    words: ["der", "die", "das", "und", "ist", "nicht", "ein", "eine", "mit",
+            "auf", "sich", "dem", "den", "von", "ich", "wir", "sie", "haben",
+            "sein", "wird", "aber", "auch", "noch", "wie", "wenn", "sehr",
+            "heute", "danke", "bitte", "kann", "muss", "mehr", "oder", "aus",
+            "bei", "nach", "schon", "immer", "guten", "tag"]
+    letters: "äöüßÄÖÜ"
+
+  fr:
+    words: ["le", "la", "les", "des", "est", "une", "un", "et", "pour", "dans",
+            "que", "qui", "avec", "pas", "sur", "plus", "vous", "nous", "je",
+            "elle", "ce", "cette", "mais", "comme", "tout", "bien", "tres",
+            "merci", "bonjour", "quoi", "faire", "etre", "avoir", "aussi",
+            "donc", "alors", "temps", "aujourd", "beau", "sont"]
+    letters: "àâçéèêëîïôûùœÉÈÇ"
+
+  es:
+    words: ["el", "los", "las", "es", "una", "para", "con", "por", "como",
+            "mas", "pero", "todo", "muy", "hola", "gracias", "que", "donde",
+            "cuando", "este", "esta", "son", "estas", "hacer", "tiene",
+            "tambien", "ahora", "bien", "hoy", "ser", "hay", "sin", "sobre",
+            "desde", "porque", "buenos", "dias", "amigo", "nada", "algo"]
+    letters: "ñÑ¿¡"
+
+  it:
+    words: ["il", "lo", "gli", "di", "che", "per", "con", "non", "sono",
+            "questo", "questa", "come", "piu", "molto", "ciao", "grazie",
+            "dove", "quando", "anche", "bene", "oggi", "essere", "avere",
+            "fare", "cosa", "perche", "del", "della", "nel", "alla", "sul",
+            "tutto", "ancora", "gia", "buongiorno", "prego", "scusa"]
+    letters: "èìò"
+
+  pl:
+    words: ["nie", "jest", "sie", "na", "do", "to", "ze", "jak", "tak", "ale",
+            "czy", "ten", "dla", "przez", "przy", "oraz", "bardzo", "dobrze",
+            "dzien", "dziekuje", "prosze", "gdzie", "kiedy", "dlaczego", "mam",
+            "moze", "teraz", "tylko", "jeszcze", "juz", "bez", "pod", "nad",
+            "za", "od", "we", "co", "jestem", "czesc"]
+    letters: "ąćęłńśźżĄĆĘŁŃŚŹŻ"
+
+  pt:
+    words: ["os", "as", "de", "do", "da", "em", "um", "uma", "para", "com",
+            "nao", "que", "por", "como", "mais", "muito", "ola", "obrigado",
+            "onde", "quando", "este", "esta", "sao", "fazer", "tem", "tambem",
+            "agora", "bem", "hoje", "ser", "sem", "sobre", "desde", "mas",
+            "ainda", "voce", "bom", "dia", "tudo"]
+    letters: "ãõÃÕ"
+
+  tr:
+    words: ["bir", "ve", "bu", "icin", "ile", "cok", "ben", "sen", "biz", "siz",
+            "ne", "nasil", "nerede", "var", "yok", "evet", "hayir", "merhaba",
+            "tesekkur", "lutfen", "gunaydin", "bugun", "yarin", "simdi", "daha",
+            "gibi", "kadar", "ama", "veya", "degil", "olan", "oldu", "yapmak",
+            "etmek", "gelmek", "gitmek", "iyi", "guzel", "eve", "hava"]
+    letters: "ğışİĞŞ"
