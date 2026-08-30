@@ -326,3 +326,82 @@ def test_the_owners_existing_pair_is_fully_cleanable(mm):
     block = mm.format_memory_for_prompt(mm.load_memory())
     assert block.count("Cat Name:") == 1, block
     assert "Tigr" not in block
+
+
+# ── 6. УЖЕ ЛЕЖАЩИЙ ДВОЙНИК ПОДБИРАЕТСЯ ПРИ ЗАПИСИ ───────────────────────
+
+def test_a_stale_spelling_is_picked_up_when_the_fact_is_rewritten(mm):
+    """Второй живой прогон владельца: правки выше НЕ ХВАТИЛО.
+
+    ЗАМЕР 30.08.2026, ВТОРОЙ РАЗГОВОР. Приведение имени закрыло появление
+    НОВЫХ двойников, но на диске владельца остался старый `Cat Name` от
+    прошлой поломки. Он сказал «кота зовут лев но теперь буду звать его
+    алексик», модель отработала БЕЗУПРЕЧНО:
+        forget_memory {'key':'cat_name'}                  -> Forgotten
+        save_memory   {'key':'cat_name','value':'Alexic'}  -> Saved
+    А в промпт снова уехали две строки — «Cat Name: Lev» и
+    «Cat Name: Alexic», потому что стирала и писала она в `cat_name`, а
+    рядом жил `Cat Name`, до которого никто не дотягивался.
+
+    Сторож держит именно эту последовательность: тот, кто её сломает,
+    вернёт владельцу вопрос «а как всё-таки зовут кота».
+    """
+    import json
+    from core.safe_json import state_path
+    mm.update_memory({"relationships": {"seed": "чтобы файл появился"}})
+    path = state_path("long_term.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["relationships"] = {
+        "cat_name": {"value": "Cat named Tigr", "updated": "2026-08-25"},
+        "Cat Name": {"value": "Lev", "updated": "2026-08-30"},
+    }
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    mm.forget("cat_name", "relationships")            # как в журнале
+    mm.update_memory({"relationships": {"cat_name": "Alexic"}})
+
+    left = {k: v for k, v in mm.load_memory()["relationships"].items()
+            if k != "seed"}
+    assert list(left) == ["cat_name"], left
+    assert left["cat_name"]["value"] == "Alexic"
+    block = mm.format_memory_for_prompt(mm.load_memory())
+    assert block.count("Cat Name:") == 1, block
+    assert "Lev" not in block, "прежнее имя не должно остаться в промпте"
+
+
+def test_picking_up_a_stale_spelling_keeps_the_owners_own_words(mm):
+    """Перенос, а не выброс: поле `said` обязано уехать вместе с фактом.
+
+    В `said` лежит исходная фраза владельца, и именно по ней потом ищет
+    поиск. Если бы старая запись просто удалялась, переименование ключа
+    молча стирало бы его собственные слова — потеря, которую он заметил
+    бы только через месяц, когда поиск перестал бы находить факт.
+    """
+    import json
+    from core.safe_json import state_path
+    mm.update_memory({"relationships": {"seed": "чтобы файл появился"}})
+    path = state_path("long_term.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["relationships"] = {
+        "Cat Name": {"value": "Lev", "updated": "2026-08-20",
+                     "said": "кота зовут лев"},
+    }
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    mm.update_memory({"relationships": {"cat_name": "Lev"}})   # без said
+    entry = mm.load_memory()["relationships"]["cat_name"]
+    assert entry["said"] == "кота зовут лев", entry
+
+
+def test_picking_up_does_not_reach_a_similar_but_different_key(mm):
+    """Подбор берёт ТОЛЬКО тот же факт, не соседний похожий.
+
+    `cat_names` («два кота») — другой факт, чем `cat_name`. Если подбор
+    станет жаднее, запись одного факта начнёт молча съедать другой, и это
+    будет хуже исходного дефекта: дубль владелец видит, а тихую пропажу нет.
+    """
+    mm.update_memory({"relationships": {"cat_names": "два кота"}})
+    mm.update_memory({"relationships": {"cat_name": "Lev"}})
+    left = mm.load_memory()["relationships"]
+    assert "cat_names" in left, left
+    assert "cat_name" in left, left
