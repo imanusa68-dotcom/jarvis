@@ -405,3 +405,136 @@ def test_picking_up_does_not_reach_a_similar_but_different_key(mm):
     left = mm.load_memory()["relationships"]
     assert "cat_names" in left, left
     assert "cat_name" in left, left
+
+
+# --------------------------------------------------------------------------
+# РАЗДЕЛ 7. УРОВЕНЬ КАТЕГОРИЙ — НАВЕРХУ СЛИВАЕМ, А НЕ ВЫБРАСЫВАЕМ.
+#
+# ЭТОТ РАЗДЕЛ ПОЯВИЛСЯ ПОТОМУ, ЧТО ПРАВКА e92266f ВНЕСЛА ДЕФЕКТ ХУЖЕ ТОГО,
+# который чинила, и ни один из 22 сторожей выше его не заметил. Все они
+# подавали функции ИМЯ ФАКТА в чужом написании. Ни один не подал КАТЕГОРИЮ.
+# Проверялось только то место, где правка ожидалась работать.
+#
+# ЗАМЕР 30.08.2026, версия против версии:
+#     до e92266f:    ФАКТ ЖИВ: True
+#     после e92266f: ФАКТ ЖИВ: False
+# Один вызов update_memory({'notes': ...}) при наличии на диске `Notes`
+# оставлял от двух категорий одну, со всем содержимым второй, молча —
+# без строки в журнале. И это не безобидно: замерено, что факты из
+# категории в чужом написании ВИДНЫ и в блоке промпта, и в поиске recall.
+#
+# `_recursive_update` рекурсивна, и уровни в ней значат разное: внизу
+# ключи — имена фактов, наверху — категории. Два написания одного ФАКТА —
+# противоречие, верно ровно одно, выбирает владелец последней фразой.
+# Два написания одной КАТЕГОРИИ — две полки с разными фактами, и терять
+# содержимое ни одной нельзя.
+# --------------------------------------------------------------------------
+
+
+def _seed_categories(mm, extra: dict):
+    """Положить на диск категории в чужом написании, минуя update_memory.
+
+    Иначе их не создать: канонизация на входе как раз и не даст записать
+    `Notes`. А на диске владельца такие полки уже лежат от прошлых поломок.
+    """
+    import json
+    from core.safe_json import state_path
+    mm.update_memory({"notes": {"seed": "чтобы файл появился"}})
+    path = state_path("long_term.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.update(extra)
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def test_a_category_in_a_foreign_spelling_does_not_lose_its_facts(mm):
+    """РОВНО ТОТ СЛУЧАЙ, КОТОРЫЙ Я СЛОМАЛ. Запись в `notes` при наличии
+    `Notes` не имеет права уничтожить содержимое `Notes`."""
+    _seed_categories(mm, {"Notes": {
+        "important_thing": {"value": "ВАЖНЫЙ ФАКТ", "updated": "2026-08-29"},
+    }})
+    mm.update_memory({"notes": {"new_fact": "что-то"}})
+    left = mm.load_memory()
+    assert "Notes" not in left, "чужое написание должно исчезнуть как ключ"
+    assert "important_thing" in left["notes"], left["notes"]
+    assert left["notes"]["important_thing"]["value"] == "ВАЖНЫЙ ФАКТ"
+
+
+def test_three_spellings_of_one_category_all_fold_into_one(mm):
+    """`notes` + `Notes` + `NOTES` — одна полка, и ни один факт не пропал."""
+    _seed_categories(mm, {
+        "Notes": {"b": {"value": "BBB", "updated": "2026-08-29"}},
+        "NOTES": {"c": {"value": "CCC", "updated": "2026-08-29"}},
+    })
+    mm.update_memory({"notes": {"e": "EEE"}})
+    left = mm.load_memory()
+    assert "Notes" not in left and "NOTES" not in left, list(left)
+    for fact in ("seed", "b", "c", "e"):
+        assert fact in left["notes"], (fact, left["notes"])
+
+
+def test_on_a_collision_the_canonical_fact_survives(mm):
+    """Если один и тот же факт есть на обеих полках — выживает канонический.
+
+    Он либо новее, либо его прямо сейчас перезаписывает владелец. Иначе
+    свежее значение молча откатилось бы к старому.
+    """
+    mm.update_memory({"notes": {"a": "СВЕЖЕЕ"}})
+    _seed_categories(mm, {"Notes": {
+        "a": {"value": "СТАРОЕ", "updated": "2026-01-01"},
+        "b": {"value": "BBB", "updated": "2026-01-01"},
+    }})
+    mm.update_memory({"notes": {"z": "неважно"}})
+    left = mm.load_memory()["notes"]
+    assert left["a"]["value"] == "СВЕЖЕЕ", left["a"]
+    assert left["b"]["value"] == "BBB", "чужой факт всё равно должен переехать"
+
+
+def test_folding_categories_does_not_touch_a_different_category(mm):
+    """`My Notes` — ДРУГАЯ категория, а не написание `notes`. Не трогать."""
+    _seed_categories(mm, {"My Notes": {
+        "d": {"value": "DDD", "updated": "2026-08-29"},
+    }})
+    mm.update_memory({"notes": {"e": "EEE"}})
+    left = mm.load_memory()
+    assert "My Notes" in left, list(left)
+    assert left["My Notes"]["d"]["value"] == "DDD"
+
+
+def test_the_fact_level_still_overwrites_and_does_not_merge(mm):
+    """АСИММЕТРИЯ НАМЕРЕННАЯ. Наверху слияние, внизу — перезапись.
+
+    Если слияние протечёт на уровень фактов, вернётся исходный дефект:
+    два имени одного кота в промпте. Этот сторож держит границу.
+    """
+    import json
+    from core.safe_json import state_path
+    mm.update_memory({"relationships": {"seed": "x"}})
+    path = state_path("long_term.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["relationships"]["Cat Name"] = {
+        "value": "Lev", "updated": "2026-08-20",
+    }
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    mm.update_memory({"relationships": {"cat_name": "Alexic"}})
+    left = mm.load_memory()["relationships"]
+    assert "Cat Name" not in left, left
+    assert left["cat_name"]["value"] == "Alexic", left["cat_name"]
+    block = mm.format_memory_for_prompt(mm.load_memory())
+    assert block.count("Cat Name:") == 1, block
+    assert "Lev" not in block, block
+
+
+def test_the_code_tells_categories_from_facts_by_value_type(mm):
+    """Различение уровней обязано остаться в коде, и одним условием.
+
+    Глубину рекурсии пришлось бы протаскивать лишним доводом через все
+    вызовы, включая один из фонового потока. Тип значения уже проверяется
+    тем же условием, по которому функция решает — спускаться или писать.
+    """
+    from pathlib import Path
+    text = Path(mm.__file__).read_text(encoding="utf-8")
+    assert "_is_container" in text, "различение уровней пропало"
+    assert text.count("_is_container = isinstance(value, dict)") == 1, \
+        "решение об уровне должно приниматься в одном месте"
