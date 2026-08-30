@@ -893,8 +893,49 @@ TOOL_DECLARATIONS = [
             "memory and is a lie to the user. To forget you MUST call this tool. "
             "If you are unsure of the exact key, pass your best guess for key and "
             "category; the system also searches every category for that key. "
+            # ОГОВОРКА, 30.08.2026. НАПИСАНО ПО ЖИВОМУ ЛОГУ ВЛАДЕЛЬЦА, а не по
+            # предположению. Он сказал «я в америке живу… ой тоесть Химках»,
+            # и в журнале два вызова подряд:
+            #     save_memory {'key':'country','value':'United States'}
+            #     save_memory {'key':'city',   'value':'Khimki'}
+            # Поправку модель записала в ДРУГОЙ ключ, а ошибочный `country`
+            # не тронула — и «Country: United States» уезжало в промпт каждую
+            # сессию, пока владелец сам не попросил «забудь мою страну».
+            #
+            # МОДЕЛЬ ДЕЙСТВОВАЛА ПО ИНСТРУКЦИИ, и это главное: в описании
+            # save_memory прямо сказано «не уверена, что это то же свойство —
+            # заводи НОВЫЙ ключ, дубликат приберут, перезапись уничтожает
+            # сказанное». Правило верное и остаётся. Дыра в том, что случай
+            # «владелец отменяет только что сказанное» им не покрыт: там нужен
+            # не новый ключ и не перезапись, а СТИРАНИЕ прежнего.
+            #
+            # ПОЧЕМУ ТЕКСТ ЗДЕСЬ, А НЕ В ОПИСАНИИ save_memory. Замерено:
+            # описание save_memory занимает 4498 знаков при потолке 4500
+            # (tests/test_step2_key_reuse_and_tone.py), и мой же сторож в
+            # test_step1_save_criterion говорит, что четвёртый подъём потолка
+            # означает «текст исчерпан». Правило про стирание и по смыслу
+            # принадлежит инструменту стирания: сюда модель смотрит, когда
+            # решает, что удалить.
+            #
+            # ЧТО ЭТО НЕ ЛЕЧИТ. Инструкция — просьба, не запрет: она СНИЖАЕТ
+            # частоту, а не гарантирует ноль (та же честная оговорка, что у
+            # правила про второй ответ). Срок годности здесь бессилен по
+            # устройству: `country` не событие (_is_event_key = False), порог
+            # 14 дней его не касается никогда.
+            #
+            # ОТКАТ: удалить абзац ниже, поведение вернётся к прежнему.
+            "A SELF-CORRECTION IN THE SAME BREATH IS ALSO A REMOVAL, and it is "
+            "the case most easily missed. 'I live in America... oh I mean in "
+            "Khimki' does not merely add a city: it TAKES BACK the country. "
+            "Saving the correction under a new key leaves BOTH facts in memory, "
+            "and the wrong one reaches you every session from then on. So when "
+            "they retract what they have just said ('ой тоесть', 'нет, я имел в "
+            "виду', 'no wait, I meant'), call forget_memory on the key you just "
+            "wrote, and only then save the corrected fact. "
             "Only tell the user it is gone AFTER this returns 'Forgotten:'. If it "
-            "returns 'Not found', tell them there was nothing saved to remove."
+            "returns 'Not found', tell them there was nothing saved to remove. "
+            "A correction needs no receipt: do not report either call, just "
+            "answer what they actually said."
         ),
         "parameters": {
             "type": "OBJECT",
