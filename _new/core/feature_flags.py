@@ -1,0 +1,213 @@
+# core/feature_flags.py
+"""
+Stage 2 feature flags - small, central place to gate new subsystems.
+
+Read from ~/.jarvis/settings.json via config.loader. Each flag has a safe
+default so a fresh install behaves predictably even before the settings file
+mentions it.
+
+Phase 0, step 2 (2026-08-06): the settings file moved OUT of the project folder
+and into the home directory, next to jarvis.db, the memory and the personality.
+Read the note under CONSENT_SETTING for what living inside the project cost us.
+Nothing in this module knows where the file is - config.loader is the one door,
+and it is the only place that has to change if the location ever moves again.
+
+Stage-2 decision: fileops is ON by default and can be switched OFF by putting
+"fileops_enabled": false in ~/.jarvis/settings.json. There is no toggle in the
+UI: this docstring used to claim one, and ui.py has never contained a single
+call to get_setting or set_setting (checked 2026-08-06 - zero hits).
+"""
+from __future__ import annotations
+
+FILEOPS_SETTING = "fileops_enabled"
+FILEOPS_DEFAULT = True  # Stage-2 decision: default ON
+
+
+def _get(name, default):
+    try:
+        from config.loader import get_setting
+        val = get_setting(name, default)
+    except Exception:
+        return default
+    return default if val is None else val
+
+
+def _as_bool(val, default: bool) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes", "on")
+    if isinstance(val, (int, float)):
+        return bool(val)
+    return default
+
+
+def fileops_enabled() -> bool:
+    """True if the transactional fileops layer should handle file mutations."""
+    return _as_bool(_get(FILEOPS_SETTING, FILEOPS_DEFAULT), FILEOPS_DEFAULT)
+
+
+def set_fileops_enabled(enabled: bool) -> None:
+    """Persist the fileops flag (used by the UI settings toggle)."""
+    from config.loader import set_setting
+    set_setting(FILEOPS_SETTING, bool(enabled))
+
+
+# -- Stage 3A: durable consent ------------------------------------------------
+# Confirmations become database rows instead of a boolean the model sets on its
+# own call. Starts OFF: the two mechanisms coexist for one validation round on
+# the real machine, then this flips to ON and the old `confirmed` flag is
+# deleted outright. The overlap is deliberately SHORT - a permanent "both ways"
+# switch is how a security fix quietly never finishes.
+#
+# 2026-07-26: flipped to ON after two clean Windows runs (531 passed) plus a
+# live delete where the ticket was minted, spent, and correctly refused on
+# replay/mismatch. It ALSO had to flip because the setting lives in the project
+# folder (config/settings.json), so every fresh unzip silently reverted to the
+# legacy path - and a safety mechanism that depends on the user remembering a
+# command in the right directory is not a safety mechanism.
+#
+# 2026-08-06 (phase 0, step 2): that cause is now fixed at the root - the file
+# lives in the home directory and survives an unzip. The default stays ON:
+# fixing where a setting is stored says nothing about which mechanism is right.
+CONSENT_SETTING = "durable_consent_enabled"
+CONSENT_DEFAULT = True
+
+
+def durable_consent_enabled() -> bool:
+    """True if confirmations are backed by consent tickets in jarvis.db."""
+    return _as_bool(_get(CONSENT_SETTING, CONSENT_DEFAULT), CONSENT_DEFAULT)
+
+
+def set_durable_consent_enabled(enabled: bool) -> None:
+    from config.loader import set_setting
+    set_setting(CONSENT_SETTING, bool(enabled))
+
+
+# -- Phase 0, step 2: the agents switch ---------------------------------------
+# The two-level architecture (one main agent that speaks, worker agents that do
+# not) arrives in phase 2. The switch is created now, deliberately controlling
+# nothing, for two reasons. First, it has to live outside the project folder
+# BEFORE any agent code exists, or the first unzip after phase 2 turns agents on
+# by accident. Second, it is the rollback plan for every later phase: one line
+# in one file, and Jarvis is a monolith again with all the agent code still on
+# disk but dead.
+#
+# The key is spelled JARVIS_AGENTS because that is the name the design document
+# and the plan use. One name means the owner can search for it once and find
+# both the switch and the reasoning behind it.
+AGENTS_SETTING = "JARVIS_AGENTS"
+AGENTS_DEFAULT = False   # off until phase 2 says otherwise, on purpose
+
+
+def agents_enabled() -> bool:
+    """True if work may be handed to worker agents instead of the monolith."""
+    return _as_bool(_get(AGENTS_SETTING, AGENTS_DEFAULT), AGENTS_DEFAULT)
+
+
+def set_agents_enabled(enabled: bool) -> None:
+    """Persist the agents switch in ~/.jarvis/settings.json."""
+    from config.loader import set_setting
+    set_setting(AGENTS_SETTING, bool(enabled))
+
+
+# -- Двойной ответ: молчаливое завершение записи в память ----------------------
+#
+# ЗАЧЕМ ЭТОТ ВЫКЛЮЧАТЕЛЬ СУЩЕСТВУЕТ
+# Владелец 29.08.2026: «я не хочу чтобы это было реже, я хочу чтобы эта
+# проблема полностью исчезла». Речь о ходе, где Джарвис отвечает ДВА РАЗА:
+# по существу — до вызова save_memory, и докладом о записи — после него.
+# Замер по журналу: 3 хода из 3 с вызовом инструмента против 0 из 2 без.
+#
+# Лечится штатным механизмом протокола, а не просьбой в промпте:
+# `behavior=NON_BLOCKING` в объявлении инструмента плюс `scheduling=SILENT`
+# и `will_continue=False` в ответе. Документация SDK (проверено на версии
+# владельца 2.12.1) описывает ровно нашу задачу дословно: «To avoid
+# triggering the generation and finish the function call, additionally set
+# `scheduling` to `SILENT`».
+#
+# ПОЧЕМУ ВЫКЛЮЧАТЕЛЬ, А НЕ ПРОСТО ПРАВКА
+# Три измеренные причины, любая из которых требует пути отступления:
+#   1. Проверить это в песочнице НЕЛЬЗЯ: нет ни ключа, ни микрофона. Судить
+#      правку будет живой прогон на машине владельца, а не мои тесты.
+#   2. Поле `will_continue` по документации НЕ ПОДДЕРЖИВАЕТСЯ в Vertex AI.
+#      Мы ходим по API-ключу, не через Vertex, но если сервер однажды
+#      перестанет понимать поля, последствие серьёзное: модель может
+#      замолчать после записи совсем.
+#   3. Тред разработчиков Google от 07.01.2026 сообщал, что SILENT НЕ ПОМОГ
+#      от удвоения. Там дефект был другой — дословный дубль звука, — но
+#      честнее считать, что риск ненулевой, чем надеяться.
+#
+# ВКЛЮЧЁН ПО УМОЛЧАНИЮ — и это осознанное решение, а не небрежность.
+# Выключенный по умолчанию флаг не лечит ничего: владелец просил, чтобы
+# проблема исчезла, а не чтобы появилась настройка. Если станет хуже, одна
+# строка в ~/.jarvis/settings.json возвращает прежнее поведение целиком:
+#     "JARVIS_SILENT_MEMORY_WRITE": false
+SILENT_MEMORY_SETTING = "JARVIS_SILENT_MEMORY_WRITE"
+SILENT_MEMORY_DEFAULT = True
+
+
+def silent_memory_write_enabled() -> bool:
+    """True, если успешная запись в память завершается БЕЗ второй реплики.
+
+    Относится РОВНО к одному инструменту — `save_memory`, и только к его
+    успешному пути. Отказы двери, `forget_memory` и `recall_memory` не
+    затронуты намеренно: там владелец ОБЯЗАН услышать результат, и немой
+    отказ памяти был бы хуже двойного ответа — он обманывает, а не раздражает.
+    """
+    return _as_bool(_get(SILENT_MEMORY_SETTING, SILENT_MEMORY_DEFAULT),
+                    SILENT_MEMORY_DEFAULT)
+
+
+def set_silent_memory_write_enabled(enabled: bool) -> None:
+    """Сохранить выключатель в ~/.jarvis/settings.json."""
+    from config.loader import set_setting
+    set_setting(SILENT_MEMORY_SETTING, bool(enabled))
+
+
+# -- Срок годности фактов о событиях ------------------------------------------
+#
+# ЗАЧЕМ ЭТОТ ВЫКЛЮЧАТЕЛЬ СУЩЕСТВУЕТ
+# Владелец сказал «у меня болит голова». Факт лёг в память и ехал в промпт
+# КАЖДУЮ сессию — вечно. Через две недели Джарвис всё ещё спрашивал «как
+# голова?», потому что промпт собирался из JSON и на поле `updated` не смотрел
+# никто. Замер на настоящей памяти владельца (probe49/probe50): 4 факта из 18
+# были просрочены по времени — 22% памяти и 32% знаков блока.
+#
+# ПОЧЕМУ ЭТО НЕ УДАЛЕНИЕ
+# Инвариант этого дома, дословно из шапки fact_store: «JUNK IS HIDDEN, NEVER
+# DELETED… Automation does not get to decide which of the user's data is
+# worthless». Срок годности его ПРОДОЛЖАЕТ, а не отменяет: строка исчезает
+# только из блока промпта. На диске запись цела, recall_memory её находит
+# (промпт собирается из JSON, а поиск идёт по SQLite — две разные копии,
+# проверено probe51), и один повтор владельца возвращает её обратно.
+#
+# ПОЧЕМУ ВЫКЛЮЧАТЕЛЬ, А НЕ ПРОСТО ПРАВКА
+# Признак «это факт о событии» — эвристика по словам в ключе, и список слов
+# конечен. Замер (probe63): 0 ошибок на 40 реальных ключах, но ключ вида
+# `mood_at_the_moment` правило не узнает, а `doctor_called` узнает слишком
+# рьяно. Цена ошибки намеренно сделана низкой (факт цел, находится, вернётся
+# от повтора), и всё же путь отступления обязан быть: одна строка в
+# ~/.jarvis/settings.json возвращает прежнее поведение целиком.
+#
+# ВКЛЮЧЁН ПО УМОЛЧАНИЮ: выключенный по умолчанию флаг не лечит ничего —
+# владелец просил, чтобы проблема исчезла, а не чтобы появилась настройка.
+#     "JARVIS_MEMORY_EXPIRY": false
+EXPIRY_SETTING = "JARVIS_MEMORY_EXPIRY"
+EXPIRY_DEFAULT = True
+
+
+def memory_expiry_enabled() -> bool:
+    """True, если просроченные факты о событиях не едут в промпт.
+
+    Относится РОВНО к сборке блока памяти для модели. Ни JSON, ни поисковый
+    индекс при этом не правятся: скрытие живёт только в том тексте, который
+    уходит в промпт, и не оставляет следов на диске.
+    """
+    return _as_bool(_get(EXPIRY_SETTING, EXPIRY_DEFAULT), EXPIRY_DEFAULT)
+
+
+def set_memory_expiry_enabled(enabled: bool) -> None:
+    """Сохранить выключатель в ~/.jarvis/settings.json."""
+    from config.loader import set_setting
+    set_setting(EXPIRY_SETTING, bool(enabled))

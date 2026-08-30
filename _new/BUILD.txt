@@ -1,0 +1,33 @@
+Jarvis Mark XXXVI. Метка сборки. Этот файл пишет код, а не человек.
+Если цифры тестов старше вашей правки, значит тесты после правки не гоняли.
+Строки вида ключ = значение читает код. Руками их менять бессмысленно.
+
+stamp_ver = 1
+written_at = 2026-08-29T00:19:25
+written_at_utc = 2026-08-29T00:19:25Z
+written_by = tests
+code_ver = 1.21
+phase = 1
+step = 21
+folder = jarvis_stage3c_step1b
+project_path = /home/user/webapp/_unzip/jarvis_2026-08-16_faza05_priemka/jarvis_stage3c_step1b
+python = 3.13.14
+platform = Linux-6.1.155-x86_64-with-glibc2.41
+tests_total = 1857
+tests_failed = 17
+tests_seconds = 47.38
+tests_at = 2026-08-28T21:09:19
+tests_scope = полный прогон
+tests_source = python -m pytest -q
+home_at = 2026-08-23T02:53:32
+home_path = C:\Users\rdrr\.jarvis
+jarvis_db_ver = 18
+history_db_ver = нет файла
+settings_ver = нет файла
+memory_ver = 1
+personality_ver = нет файла
+gate_audit_ver = 1
+partial_at = 2026-08-29T00:19:25
+partial_failed = 59
+partial_total = 1852
+Строки вида ключ = значение читает код. Руками их менять бессмысленно.

@@ -1,0 +1,60 @@
+[project]
+name = "jarvis-mark-xxxv"
+version = "0.36.0"
+description = "Jarvis MARK XXXV — голосовой desktop-ассистент (прототип, мигрирует на MARK XXXVI)"
+requires-python = ">=3.12"
+dependencies = [
+    # Core AI: единственный SDK. Старый google-generativeai удалён 09.08.2026:
+    # все вспомогательные вызовы идут через core/aux_model.aux_call.
+    "google-genai>=1.0.0",
+    # Audio
+    "pyaudio",
+    # Search stack
+    "ddgs>=7.0.0",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+    # Browser automation (после установки: uv run playwright install chromium)
+    "playwright>=1.40.0",
+    "pyautogui",
+    "pyperclip",
+    "pywin32; sys_platform == 'win32'",
+    # System & process
+    "psutil>=5.9.0",
+    "watchdog>=3.0.0",
+    # Файловые операции: жёсткий импорт в actions/file_controller.py (не был объявлен в старом списке зависимостей)
+    "send2trash>=1.8.0",
+    # Office-файлы: ленивые импорты в actions/file_controller.py:209,215 (тоже не были объявлены)
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+    # Screen / vision
+    "opencv-python>=4.8.0",
+    "mss>=9.0.0",
+    "Pillow>=10.0.0",
+    # YouTube
+    "youtube-transcript-api>=0.6.0",
+    "numpy>=1.24.0",
+    # Конфигурация: config/registry.yaml (роль→модель)
+    "pyyaml>=6.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest~=8.3",
+]
+
+[tool.uv]
+# Плоский прототип, не устанавливаемый пакет
+package = false
+
+[tool.pytest.ini_options]
+# pythonpath: тесты исторически работали только как `python -m pytest` из корня;
+# no:capture: обход сломанного pyreadline в capture-слое на этой машине (устное знание, закреплено)
+pythonpath = ["."]
+addopts = "-p no:capture"
+testpaths = ["tests"]
+# shared_home: файлу нужен ОДИН дом на весь файл (состояние переживает
+# соседние тесты). Без метки каждый тест получает свой — tests/conftest.py.
+markers = [
+    "shared_home: тестам этого файла нужен один общий дом на файл",
+]

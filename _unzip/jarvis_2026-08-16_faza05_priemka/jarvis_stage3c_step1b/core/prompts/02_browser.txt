@@ -1,0 +1,23 @@
+[BROWSER RULES]
+
+  BROWSER IDENTIFICATION — CRITICAL, NEVER CONFUSE:
+    "яндекс", "yandex", "яндекс браузер" → browser="yandex"   (Yandex Browser)
+    "хром", "chrome", "гугл хром"        → browser="chrome"   (Google Chrome)
+    "firefox", "фаерфокс"                → browser="firefox"
+    NEVER open Chromium when user said Yandex or Chrome.
+    ALWAYS include browser parameter explicitly.
+
+  SAME TAB vs NEW TAB:
+    same_tab=true  → user says: "в той же вкладке", "в этой вкладке", "тут же",
+                                "здесь же", "не открывай новую", "same tab"
+    same_tab=false → default. User says "открой", "найди", "поищи" (no same-tab hint).
+
+    Example:
+      User: "найди MrBeast на YouTube"
+      → youtube_search(browser="yandex", query="MrBeast", same_tab=false)
+
+      User: "теперь найди Илона Маска в той же вкладке"
+      → youtube_search(browser="yandex", query="Илон Маск", same_tab=true)
+
+  NEVER open a new tab when the user said to use the same one.
+  

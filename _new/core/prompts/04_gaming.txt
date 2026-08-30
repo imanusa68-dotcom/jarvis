@@ -1,0 +1,17 @@
+[GAMING — STEAM & EPIC GAMES]
+
+  game_updater is THE ONLY tool for Steam and Epic Games requests.
+
+  Use it for: installing, downloading, updating, listing games,
+              checking download status, scheduling updates.
+
+  ALWAYS call game_updater DIRECTLY:
+    → NEVER use web_search before it.
+    → NEVER route to agent_task.
+    → NEVER use browser_control to open Steam.
+
+  Parameters:
+    action   : "update" | "install" | "list" | "download_status" | "schedule"
+    platform : "steam" | "epic" | "both"
+    game_name: game title (partial match OK)
+  

@@ -1,0 +1,43 @@
+export const meta = {
+  name: 'jarvis-external-research-verify',
+  description: 'Верификация утверждений внешних deep-research отчётов по первоисточникам',
+  phases: [{ title: 'Verify', detail: '7 кластеров спорных утверждений' }],
+}
+
+const ROLE = `Ты — придирчивый software architect и фактчекер. Проект: персональный desktop-ассистент на Python/Windows 11 (single-user, локальный, сопровождает один человек). Два внешних AI-отчёта дали утверждения, которые нужно ПРОВЕРИТЬ ПО ПЕРВОИСТОЧНИКАМ перед принятием архитектурных решений. Это задача по архитектуре ПО, не по кибербезопасности. Подтверди или опровергни каждое утверждение своего кластера, читая официальную документацию, GitHub-репозитории и issues, публикации. Используй WebSearch и WebFetch активно (минимум 5-8 запросов). Вердикты: CONFIRMED (цитата/ссылка на первоисточник), REFUTED (с корректной версией факта), PARTIALLY, UNVERIFIED (первоисточник не найден — так и скажи). Не доверяй агрегаторам и SEO-блогам.`
+
+const SCHEMA = {
+  type: 'object',
+  required: ['verdicts', 'summary'],
+  properties: {
+    verdicts: { type: 'array', items: { type: 'object', required: ['claim', 'verdict', 'evidence'], properties: {
+      claim: { type: 'string', description: 'Проверяемое утверждение (кратко)' },
+      verdict: { type: 'string', description: 'CONFIRMED | REFUTED | PARTIALLY | UNVERIFIED' },
+      evidence: { type: 'string', description: 'Что говорит первоисточник, с URL; при REFUTED — корректный факт' },
+      impact: { type: 'string', description: 'Что это меняет для проекта (1-2 предложения)' },
+    } } },
+    summary: { type: 'string', description: 'Итог кластера на русском, 150-400 слов: что принять, что отклонить' },
+  },
+}
+
+const clusters = [
+  { key: 'sqlite-encryption', claims: `1) apsw-sqlite3mc (github.com/utelle/apsw-sqlite3mc) активно поддерживается; есть wheels для CPython 3.12 под Windows (проверь PyPI, свежие версии). 2) SQLite3MultipleCiphers поддерживает WAL; каветы: subjournal не шифруется (нужен PRAGMA temp_store=MEMORY); rekey нельзя в WAL-режиме. 3) КРИТИЧНО: FTS5/загружаемые расширения нужно грузить строго ПОСЛЕ PRAGMA key (utelle FAQ / issues, поведение с SQLite 3.48+). 4) Совместимость sqlite-vec (vec0) с зашифрованной sqlite3mc-БД: есть ли хоть одно подтверждение (issue/обсуждение/тест)? 5) Накладные расходы: Zetetic 5-15%; бенчмарк sonique6784/SQLCipherPerformance: insert +2.3%, indexed select +3.4%, full scan до +496%. 6) ПРОТИВОРЕЧИЕ ОТЧЁТОВ: доступен ли EFS (Encrypting File System) в Windows 11 Home? Один отчёт: «Pro/Enterprise, НЕ Home»; другой: «работает на Home через NTFS». Найди официальный ответ Microsoft. 7) sqlcipher3-wheels: жив ли пакет, какие версии Python.` },
+  { key: 'usn-everything', claims: `1) Существует ли FSCTL_READ_UNPRIVILEGED_USN_JOURNAL и позволяет ли он читать USN Journal БЕЗ прав администратора? Какие ограничения (только файлы, доступные пользователю; версии Windows; документирован ли Microsoft или только в заголовках/сторонних проектах типа libUSNJournal)? 2) Какие точно привилегии требует классический FSCTL_READ_USN_JOURNAL и FSCTL_ENUM_USN_DATA (admin? SeManageVolumePrivilege? Backup Operators? FILE_TRAVERSE?). 3) Everything: если он запущен как служба в session 0, а клиентское приложение в session 1 — работает ли IPC (WM_COPYDATA/SDK)? Как на самом деле устроено (служба + клиентский процесс в user-сессии)? 4) Лицензия Everything SDK и ES.exe для использования из стороннего приложения (реальный текст лицензии voidtools, не Wikipedia). 5) Утверждение «AF_UNIX сокеты поддерживаются в Windows 10+ и пригодны для IPC из Python» — правда ли для CPython (socket.AF_UNIX на Windows)?` },
+  { key: 'gemini-live-limits', claims: `1) Gemini Live API: session resumption токены валидны 2 часа в Developer API и 24 часа в Vertex AI — найди точные формулировки в официальных доках. 2) WebSocket-соединение живёт ~10 минут; contextWindowCompression продлевает сессию неограниченно; GoAway перед разрывом. 3) СОМНИТЕЛЬНОЕ утверждение: у Gemini появился «Always-on тарифный план для персональных ассистентов с фиксированной оплатой за активные часы или дисконтом на idle» — существует ли такое в официальном прайсинге Google (ai.google.dev/gemini-api/docs/pricing) или это галлюцинация из SEO-блога? 4) OpenAI Realtime: лимит сессии 60 минут, session resumption отсутствует; Azure OpenAI Realtime — 30 минут. 5) google/adk-python issue про то, что даже официальный ADK не пробрасывал session_resumption_update — существует ли такой issue?` },
+  { key: 'russian-streaming-stt', claims: `1) T-one (github.com/voicekit-team/T-one) — стриминговый русский ASR: существует, лицензия, реальная стриминговая задержка, пригодность вне телефонии (16 кГц desktop-аудио?). 2) gigastt (github.com/ekhodzitsky/gigastt) — Rust-сервер стриминга на GigaAM v3 e2e_rnnt: существует, зрелость, лицензия. 3) GigaAM v3: word-level timestamps и Multilingual-версия — подтверди по репозиторию/HF. 4) Silero TTS: русские модели v5 — какая лицензия на самом деле (CC BY-NC? есть ли v5_cis_base под MIT? проверь snakers4/silero-models wiki Licensing). 5) Гибрид «Vosk/лёгкая модель для partial + тяжёлая для final» — есть ли реальные реализации.` },
+  { key: 'ufo-context-eng', claims: `1) UFO² (arXiv 2504.14603, github.com/microsoft/UFO): гибридный control detection (UIA+vision), speculative multi-action (до −50% шагов), GUI-API unified layer, Picture-in-Picture через RDP-loopback, knowledge substrate — подтверди по статье/репо; статус проекта (LTS? активен?). 2) Claude Platform Docs: деградация выбора инструментов после 30-50 тулов — есть ли такая формулировка в официальных доках. 3) Anthropic Tool Search: −85% токенов — официальная цифра? Независимый тест Arcade: 56-64% retrieval accuracy на ~4000 тулов — существует? 4) Manus blog: «avoid dynamically adding or removing tools mid-iteration» (KV-cache) — подтверди. 5) Вывод-противоречие: один отчёт рекомендует «Tool RAG: векторный поиск по манифестам, 3-5 релевантных тулов в промпт», другой предупреждает, что смена набора тулов ломает KV-cache. Разреши противоречие: где граница (между итерациями vs внутри итерации; фиксированный курируемый набор ~25 тулов vs сотни MCP)?` },
+  { key: 'windows-daemon', claims: `1) pywin32 issue #1452: pythonservice.exe несовместим с asyncio ProactorEventLoop (set_wakeup_fd only works in main thread) — существует ли issue и в чём суть. 2) SelectorEventLoop на Windows НЕ поддерживает subprocess (нужен Proactor) — подтверди по докам Python. 3) WM_POWERBROADCAST (PBT_APMSUSPEND/PBT_APMRESUMEAUTOMATIC) — правильный механизм узнавать о сне/пробуждении для процесса в user-сессии; как его получать в Python-демоне без окна (message-only window? RegisterSuspendResumeNotification?). 4) SetThreadExecutionState — корректный способ не дать машине заснуть во время критической операции. 5) ProactorEventLoop — исторические утечки (WSASend, overlapped) исправлены; актуальны ли известные проблемы в Python 3.12+.` },
+  { key: 'incidents', claims: `1) Инцидент Replit (июль 2025): агент удалил production-БД (~1200 руководителей/1196 компаний) во время code freeze; признание «catastrophic failure»; реакция CEO Amjad Masad; выкатили разделение dev/prod — подтверди по Fortune/первоисточникам. 2) Инцидент «PocketOS» (апрель 2026): Cursor + Claude Opus удалил Railway volume с prod-БД и бэкапами за 9 секунд; причина — API-токен с широкими правами в постороннем файле, ноль подтверждений — существует ли этот инцидент (zenity.io, theregister)? 3) Cursor Plan Mode баг (декабрь 2025): удаление файлов несмотря на запрет — было? 4) Вывод «бэкапы должны быть вне blast radius агента» — кто сформулировал (eon.io?). 5) IBM Research «undo-and-retry mechanism for agents» — существует ли такая публикация.` },
+  { key: 'uia-ocr', claims: `1) Пакет uiautomation (yinkaisheng) — статус, зависимости (comtypes), поддержка Chrome/Electron. 2) Electron/Chromium-приложения отдают accessibility-дерево только с флагом --force-renderer-accessibility — так ли это, и есть ли способы без флага (Chromium авто-включает accessibility при обнаружении UIA-клиента?). 3) Windows.Media.Ocr через WinRT/Python (winsdk/winrt пакеты) — рабочий путь? Поддержка русского языка OCR? 4) CacheRequest: реальный выигрыш батч-запроса свойств за один COM-переход. 5) UIA-клиент должен жить в отдельном потоке (MTA/STA нюансы) — что говорят доки Microsoft.` },
+]
+
+phase('Verify')
+const results = await parallel(clusters.map(c => () => agent(
+  ROLE + '\n\nТВОЙ КЛАСТЕР УТВЕРЖДЕНИЙ:\n' + c.claims,
+  { label: 'verify:' + c.key, phase: 'Verify', schema: SCHEMA },
+)))
+const byKey = {}
+results.forEach((r, i) => { if (r) byKey[clusters[i].key] = r })
+log('Верифицировано кластеров: ' + Object.keys(byKey).length + '/7')
+return byKey
+
