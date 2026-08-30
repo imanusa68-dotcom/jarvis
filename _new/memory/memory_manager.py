@@ -130,6 +130,46 @@ def save_memory(memory: dict) -> None:
             print(f"[Memory] ⚠️ Save error — disk copy left unchanged: {exc}")
 
 
+def _canonical_key(key) -> str:
+    """Привести имя факта к одному виду: snake_case, нижний регистр.
+
+    ЗАЧЕМ. Замер живого разговора владельца 30.08.2026. Он сказал «кстати
+    моего кота зовут лев а не тигр». Модель прочитала имя ключа из БЛОКА
+    ПРОМПТА, где строки печатаются человеку — «Cat Name: Cat named Tigr»,
+    — и позвала forget_memory('Cat Name'). На диске ключ зовётся
+    `cat_name`, поиск шёл по точному совпадению, ответ был «Not found».
+    Затем save_memory('Cat Name') СОЗДАЛ ВТОРОЙ ключ рядом с первым, и в
+    промпт поехали две строки подряд:
+        - Cat Name: Cat named Tigr
+        - Cat Name: Lev
+    То есть Джарвис одновременно знает два имени одного кота и не может
+    предпочесть верное. Это потеря данных, а не косметика: старое имя не
+    стёрлось, а поправка не заменила его.
+
+    ПОЧЕМУ ПРАВКА ЗДЕСЬ, А НЕ В ПРОМПТЕ. Мы сами печатаем в блок
+    `key.replace('_', ' ').title()` — человеку так читать легче. Значит
+    дом ПРЕДЛАГАЕТ модели написание «Cat Name» и сам же его не принимает.
+    Просить модель угадывать обратное преобразование — перекладывать нашу
+    работу на догадку; она уже угадала неверно. Одно место входа лечит
+    все зовущие сразу: и запись, и стирание, и авто-запись.
+
+    ЧТО НАМЕРЕННО НЕ ДЕЛАЕТСЯ. Не переводим, не сокращаем, не правим
+    опечатки, не трогаем ЗНАЧЕНИЕ факта — только имя ключа, и только
+    регистр с пробелами и дефисами. Более умное сведение (синонимы,
+    склейка cat/kitten) означало бы, что автоматика решает, какие два
+    факта владельца — один; это запрещено инвариантом дома.
+
+    Не-строку возвращаем как есть: падать на мусоре из модели нельзя,
+    а вызывающий уже умеет пропускать пустое.
+    """
+    if not isinstance(key, str):
+        return key
+    canon = key.strip().lower().replace(" ", "_").replace("-", "_")
+    while "__" in canon:
+        canon = canon.replace("__", "_")
+    return canon or key
+
+
 def _truncate_value(val: str) -> str:
     if isinstance(val, str) and len(val) > MAX_VALUE_LENGTH:
         return val[:MAX_VALUE_LENGTH].rstrip() + "…"
@@ -154,6 +194,15 @@ def _recursive_update(target: dict, updates: dict,
             continue
         if isinstance(value, str) and not value.strip():
             continue
+
+        # ИМЯ ФАКТА ПРИВОДИТСЯ К ОДНОМУ ВИДУ ЗДЕСЬ, на входе в память.
+        # Замер (живой лог 30.08.2026): модель читает имена ключей из блока
+        # промпта, где они напечатаны для человека — «Cat Name», — и пишет
+        # их дословно. Без этой строки рядом с `cat_name` появлялся второй
+        # ключ `Cat Name`, и в промпт уезжали ДВА имени одного кота.
+        # Категории намеренно не касаемся: их список закрытый и проверяется
+        # отдельно, а ключи модель придумывает сама.
+        key = _canonical_key(key)
 
         if isinstance(value, dict) and "value" not in value:
             if key not in target or not isinstance(target[key], dict):
@@ -1074,20 +1123,52 @@ def forget(key: str, category: str | None = None) -> str:
     # возвращало забытый факт назад, либо теряло чужой свежий.
     removed = []
 
+    # ЗАМЕРЕННЫЙ ПРОМАХ, живой лог 30.08.2026. Владелец поправил имя кота,
+    # и модель позвала стирание ТРИ раза подряд, читая имена из блока
+    # промпта: 'Cat Name' -> Not found, 'Tigr Allergy' -> Not found,
+    # 'cat_behavior' -> Forgotten. Третий сработал ровно потому, что был
+    # написан в снейк-кейсе. Дом сам печатает «Cat Name» человеку и сам же
+    # такое имя не принимал — промах был НАШ, не модели.
+    #
+    # ПОЧЕМУ ЭТО ХУЖЕ НЕУДОБСТВА. «Not found» здесь — ЛОЖНОЕ отрицание:
+    # факт есть, но стирание его не видит. А следующий save с тем же
+    # написанием создаёт ВТОРОЙ ключ, и в промпте оказываются два
+    # противоречащих факта: «Cat Name: Cat named Tigr» и «Cat Name: Lev».
+    # Честность ответа при этом не страдает: настоящее «Not found» на
+    # несуществующем ключе по-прежнему возвращается (сторож на месте).
+    wanted = _canonical_key(key)
+
     def change(memory: dict) -> dict:
+        def _hit(entries: dict):
+            """Найти имя ключа в категории с учётом написания.
+
+            Точное совпадение имеет ПРИОРИТЕТ: если владелец завёл ключ с
+            причудливым именем и просит именно его, мы не имеем права
+            стереть похожий вместо названного.
+            """
+            if key in entries:
+                return key
+            for existing in entries:
+                if _canonical_key(existing) == wanted:
+                    return existing
+            return None
+
         # 1. Try the category the caller named, if any.
         candidates = []
-        if (category and isinstance(memory.get(category), dict)
-                and key in memory[category]):
-            candidates.append(category)
+        if category and isinstance(memory.get(category), dict):
+            found = _hit(memory[category])
+            if found is not None:
+                candidates.append((category, found))
         # 2. Fall back to any category that actually holds the key.
         if not candidates:
             for cat_name, entries in memory.items():
-                if isinstance(entries, dict) and key in entries:
-                    candidates.append(cat_name)
-        for cat_name in candidates:
-            del memory[cat_name][key]
-            removed.append(f"{cat_name}/{key}")
+                if isinstance(entries, dict):
+                    found = _hit(entries)
+                    if found is not None:
+                        candidates.append((cat_name, found))
+        for cat_name, fact_key in candidates:
+            del memory[cat_name][fact_key]
+            removed.append(f"{cat_name}/{fact_key}")
         return memory
 
     try:
